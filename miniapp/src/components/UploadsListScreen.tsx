@@ -10,9 +10,11 @@ interface Upload {
   error_message: string | null;
 }
 
+type Screen = 'upload' | 'uploads' | 'settings' | 'help';
+
 interface Props {
   initData: string;
-  onNavigate: (screen: string) => void;
+  onNavigate: (screen: Screen) => void;
 }
 
 const UploadsListScreen: React.FC<Props> = ({ initData, onNavigate }) => {

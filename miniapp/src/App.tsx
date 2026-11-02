@@ -34,6 +34,8 @@ declare global {
 
 type Screen = 'upload' | 'uploads' | 'settings' | 'help';
 
+type NavigateFn = (screen: Screen) => void;
+
 function App() {
   const [screen, setScreen] = useState<Screen>('upload');
   const [user, setUser] = useState<TelegramUser | null>(null);
@@ -69,7 +71,7 @@ function App() {
     );
   }
 
-  const navigate = (newScreen: Screen) => {
+  const navigate: NavigateFn = (newScreen) => {
     setScreen(newScreen);
   };
 

@@ -32,10 +32,12 @@ interface UploadStatus {
   };
 }
 
+type Screen = 'upload' | 'uploads' | 'settings' | 'help';
+
 interface Props {
   initData: string;
   uploadId: string | null;
-  onNavigate: (screen: string) => void;
+  onNavigate: (screen: Screen) => void;
 }
 
 const UploadScreen: React.FC<Props> = ({ initData, uploadId: initialUploadId, onNavigate }) => {
@@ -157,6 +159,7 @@ const UploadScreen: React.FC<Props> = ({ initData, uploadId: initialUploadId, on
 
   const uploadParts = async (partUrls: PartUrl[]) => {
     abortControllerRef.current = new AbortController();
+    const controller = abortControllerRef.current;
     const concurrency = 3;
     const queue = [...partUrls];
     const active = new Set<number>();
@@ -170,7 +173,7 @@ const UploadScreen: React.FC<Props> = ({ initData, uploadId: initialUploadId, on
         method: 'PUT',
         body: blob,
         headers: { 'Content-Type': 'application/octet-stream' },
-        signal: abortControllerRef.current.signal,
+        signal: controller.signal,
       });
 
       if (!response.ok) throw new Error(`Failed to upload part ${partUrl.partNumber}`);

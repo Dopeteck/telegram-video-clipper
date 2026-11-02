@@ -542,11 +542,11 @@ export interface TelegramAnimation {
   file_unique_id: string;
   width: number;
   height: number;
-  duration: number.
+  duration: number;
   thumbnail?: TelegramPhotoSize;
   file_name?: string;
   mime_type?: string;
-  file_size?: number.
+  file_size?: number;
 }
 
 export interface TelegramAudio {
@@ -566,116 +566,116 @@ export interface TelegramSticker {
   file_unique_id: string;
   type: string;
   width: number;
-  height: number.
-  is_animated: boolean.
-  is_video: boolean.
+  height: number;
+  is_animated: boolean;
+  is_video: boolean;
   thumbnail?: TelegramPhotoSize;
-  emoji?: string.
-  set_name?: string.
-  premium_animation?: TelegramFile.
-  mask_position?: TelegramMaskPosition.
-  custom_emoji_id?: string.
-  needs_repainting?: boolean.
-  file_size?: number.
+  emoji?: string;
+  set_name?: string;
+  premium_animation?: TelegramFile;
+  mask_position?: TelegramMaskPosition;
+  custom_emoji_id?: string;
+  needs_repainting?: boolean;
+  file_size?: number;
 }
 
 export interface TelegramFile {
   file_id: string;
   file_unique_id: string;
-  file_size?: number.
-  file_path?: string.
+  file_size?: number;
+  file_path?: string;
 }
 
 export interface TelegramMaskPosition {
-  point: string.
-  x_shift: number.
-  y_shift: number.
-  scale: number.
+  point: string;
+  x_shift: number;
+  y_shift: number;
+  scale: number;
 }
 
 export interface TelegramVenue {
-  location: TelegramLocation.
-  title: string.
-  address: string.
-  foursquare_id?: string.
-  foursquare_type?: string.
-  google_place_id?: string.
-  google_place_type?: string.
+  location: TelegramLocation;
+  title: string;
+  address: string;
+  foursquare_id?: string;
+  foursquare_type?: string;
+  google_place_id?: string;
+  google_place_type?: string;
 }
 
 export interface TelegramLocation {
-  longitude: number.
-  latitude: number.
-  horizontal_accuracy?: number.
-  live_period?: number.
-  heading?: number.
-  proximity_alert_radius?: number.
+  longitude: number;
+  latitude: number;
+  horizontal_accuracy?: number;
+  live_period?: number;
+  heading?: number;
+  proximity_alert_radius?: number;
 }
 
 export interface TelegramInvoice {
-  title: string.
-  description: string.
-  start_parameter: string.
-  currency: string.
-  total_amount: number.
+  title: string;
+  description: string;
+  start_parameter: string;
+  currency: string;
+  total_amount: number;
 }
 
 export interface TelegramSuccessfulPayment {
-  currency: string.
-  total_amount: number.
-  invoice_payload: string.
-  shipping_option_id?: string.
-  order_info?: TelegramOrderInfo.
-  telegram_payment_charge_id: string.
-  provider_payment_charge_id: string.
+  currency: string;
+  total_amount: number;
+  invoice_payload: string;
+  shipping_option_id?: string;
+  order_info?: TelegramOrderInfo;
+  telegram_payment_charge_id: string;
+  provider_payment_charge_id: string;
 }
 
 export interface PresignedUrlResponse {
-  uploadId: string.
-  key: string.
-  partNumber: number.
-  url: string.
-  expiresAt: number.
+  uploadId: string;
+  key: string;
+  partNumber: number;
+  url: string;
+  expiresAt: number;
 }
 
 export interface InitiateMultipartResponse {
-  uploadId: string.
-  key: string.
-  expiresAt: number.
-  partUrls: PresignedUrlResponse[].
+  uploadId: string;
+  key: string;
+  expiresAt: number;
+  partUrls: PresignedUrlResponse[];
 }
 
 export interface CompleteMultipartRequest {
-  uploadId: string.
-  key: string.
-  parts: { partNumber: number; etag: string }[].
+  uploadId: string;
+  key: string;
+  parts: { partNumber: number; etag: string }[];
 }
 
 export interface ApiResponse<T = unknown> {
-  ok: boolean.
-  data?: T.
-  error?: string.
-  code?: string.
+  ok: boolean;
+  data?: T;
+  error?: string;
+  code?: string;
 }
 
 export interface UploadStatusResponse {
-  upload: Upload.
-  parts: UploadPart[].
+  upload: Upload;
+  parts: UploadPart[];
   progress: {
-    uploadedBytes: number.
-    totalBytes: number.
-    percentage: number.
-  }.
+    uploadedBytes: number;
+    totalBytes: number;
+    percentage: number;
+  };
 }
 
 export interface UserUploadsResponse {
-  uploads: Upload[].
+  uploads: Upload[];
 }
 
 export interface JobResponse {
-  job: Job.
+  job: Job;
 }
 
 export interface UserJobsResponse {
-  jobs: Job[].
+  jobs: Job[];
 }
