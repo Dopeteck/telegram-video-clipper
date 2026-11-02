@@ -287,10 +287,10 @@ export class TelegramBot {
               enableLoudnorm: false,
             }),
           });
-          const result = await response.json();
+          const result = await response.json() as { ok: boolean; error?: string; data?: { id: string } };
           if (!result.ok) throw new Error(result.error || 'Failed to create job');
           
-          const job = result.data;
+          const job = result.data!;
           
           // Dispatch GitHub Actions workflow
           await this.dispatchWorkflow(job.id, upload.id, userId);
