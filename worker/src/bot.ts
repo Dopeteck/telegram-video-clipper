@@ -1,4 +1,4 @@
-import { Env, TelegramWebhookUpdate, TelegramMessage, TelegramUser, TelegramInlineKeyboardMarkup, TelegramInlineKeyboardButton, TelegramWebAppInfo, ApiResponse } from './types';
+import { Env, TelegramWebhookUpdate, TelegramMessage, TelegramUser, TelegramInlineKeyboardMarkup, TelegramInlineKeyboardButton, TelegramWebAppInfo, ApiResponse, TelegramCallbackQuery, TelegramInlineQuery } from './types';
 import { validateTelegramInitData, createApiResponse, sanitizeFilename, validateMimeType, validateFileExtension, getExtensionFromMimeType } from './utils';
 import { Database } from './db';
 import { R2Uploader } from './r2';
@@ -64,11 +64,13 @@ export class TelegramBot {
   private botToken: string;
   private webhookSecret: string;
   private appOrigin: string;
+  private maxUploadBytes: number;
 
   constructor(env: Env) {
     this.botToken = env.TELEGRAM_BOT_TOKEN;
     this.webhookSecret = env.TELEGRAM_WEBHOOK_SECRET;
     this.appOrigin = env.APP_ORIGIN;
+    this.maxUploadBytes = parseInt(env.MAX_UPLOAD_BYTES || '2147483648', 10);
     this.db = new Database(env.DB);
     this.r2 = new R2Uploader(env);
   }
@@ -174,8 +176,7 @@ export class TelegramBot {
       return this.sendMessage(chatId, '❌ Unsupported file extension.');
     }
 
-    const maxSize = parseInt(process.env.MAX_UPLOAD_BYTES || '2147483648', 10);
-    if (fileSize > maxSize) {
+    if (fileSize > this.maxUploadBytes) {
       return this.sendMessage(chatId, `❌ File too large. Maximum size is 2 GB.`);
     }
 

@@ -9,12 +9,14 @@ export class R2Uploader {
   private accountId: string;
   private accessKeyId: string;
   private secretAccessKey: string;
+  private maxConcurrentChunks: number;
 
   constructor(env: Env) {
     this.bucket = env.R2_BUCKET;
     this.accountId = env.R2_ACCOUNT_ID;
     this.accessKeyId = env.R2_ACCESS_KEY_ID;
     this.secretAccessKey = env.R2_SECRET_ACCESS_KEY;
+    this.maxConcurrentChunks = parseInt(env.MAX_CONCURRENT_CHUNKS || '3', 10);
 
     this.client = new S3Client({
       region: 'auto',
@@ -40,10 +42,9 @@ export class R2Uploader {
     const response = await this.client.send(command);
     const uploadId = response.UploadId!;
 
-    const maxParts = parseInt(process.env.MAX_CONCURRENT_CHUNKS || '3', 10);
     const partUrls: PresignedUrlResponse[] = [];
 
-    for (let partNumber = 1; partNumber <= maxParts; partNumber++) {
+    for (let partNumber = 1; partNumber <= this.maxConcurrentChunks; partNumber++) {
       const partCommand = new UploadPartCommand({
         Bucket: this.bucket,
         Key: key,

@@ -1,10 +1,15 @@
 import { Hono } from 'hono';
-import { Env, ApiResponse, PresignedUrlResponse, InitiateMultipartResponse, CompleteMultipartRequest, UploadStatusResponse, UserUploadsResponse } from './types';
+import { Env, ApiResponse, PresignedUrlResponse, InitiateMultipartResponse, CompleteMultipartRequest, UploadStatusResponse, UserUploadsResponse, TelegramUser, TelegramChat } from './types';
 import { validateTelegramInitData, createApiResponse, generateId, sanitizeFilename, validateMimeType, validateFileExtension, getExtensionFromMimeType } from './utils';
 import { Database } from './db';
 import { R2Uploader } from './r2';
 
-export const api = new Hono<{ Bindings: Env }>();
+type ApiVariables = {
+  telegramUser: TelegramUser;
+  telegramChat: TelegramChat | null;
+};
+
+export const api = new Hono<{ Bindings: Env; Variables: ApiVariables }>();
 
 api.use('*', async (c, next) => {
   const authHeader = c.req.header('Authorization');
@@ -19,7 +24,7 @@ api.use('*', async (c, next) => {
   }
 
   c.set('telegramUser', data.user);
-  c.set('telegramChat', data.chat);
+  c.set('telegramChat', data.chat || null);
   await next();
 });
 
@@ -59,7 +64,7 @@ api.post('/upload/initiate', async (c) => {
   const upload = await db.createUpload({
     id: uploadId,
     telegram_user_id: user.id,
-    telegram_chat_id: chat?.id,
+    telegram_chat_id: chat?.id ?? null,
     original_filename: filename,
     object_key: objectKey,
     file_size: fileSize,

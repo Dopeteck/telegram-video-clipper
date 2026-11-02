@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 
 interface User {
   id: number;
@@ -23,7 +23,6 @@ interface Props {
 const SettingsScreen: React.FC<Props> = ({ initData, user }) => {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
 
   const apiRequest = useCallback(async (endpoint: string, options: RequestInit = {}) => {
     const response = await fetch(endpoint, {
@@ -56,7 +55,6 @@ const SettingsScreen: React.FC<Props> = ({ initData, user }) => {
 
   const saveProfile = async (updates: Partial<Profile>) => {
     if (!profile) return;
-    setSaving(true);
     try {
       await apiRequest('/api/user/profile', {
         method: 'POST',
@@ -65,8 +63,6 @@ const SettingsScreen: React.FC<Props> = ({ initData, user }) => {
       setProfile({ ...profile, ...updates });
     } catch (e) {
       console.error('Failed to save profile', e);
-    } finally {
-      setSaving(false);
     }
   };
 

@@ -16,3 +16,26 @@ clips/
 projects/
 _site/
 .pytest_cache/
+
+# node_modules
+worker/node_modules/
+miniapp/node_modules/
+
+# build outputs
+miniapp/dist/
+worker/dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# secrets
+.dev.vars
+*.env
+*.env.local

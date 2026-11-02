@@ -1,5 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { WebApp } from '@telegram-apps/sdk';
+import { useState, useEffect, useCallback } from 'react';
 
 interface Upload {
   id: string;
@@ -81,7 +80,7 @@ const UploadsListScreen: React.FC<Props> = ({ initData, onNavigate }) => {
 
   const handleRetry = async (uploadId: string) => {
     try {
-      const { partUrls } = await apiRequest('/api/upload/part-urls', {
+      await apiRequest('/api/upload/part-urls', {
         method: 'POST',
         body: JSON.stringify({ uploadId, partNumbers: [1] }),
       });

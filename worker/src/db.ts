@@ -27,7 +27,9 @@ export class Database {
       expiresAt
     ).run();
 
-    return this.getUpload(id)!;
+    const result = await this.getUpload(id);
+    if (!result) throw new Error('Failed to create upload');
+    return result;
   }
 
   async getUpload(id: string): Promise<Upload | null> {
@@ -142,7 +144,9 @@ export class Database {
       now,
       now
     ).run();
-    return this.getUser(user.telegram_user_id)!;
+    const result = await this.getUser(user.telegram_user_id);
+    if (!result) throw new Error('Failed to create user');
+    return result;
   }
 
   async getUser(telegramUserId: number): Promise<User | null> {
@@ -193,7 +197,9 @@ export class Database {
       now
     ).run();
 
-    return this.getJob(id)!;
+    const result = await this.getJob(id);
+    if (!result) throw new Error('Failed to create job');
+    return result;
   }
 
   async getJob(id: string): Promise<Job | null> {
@@ -243,6 +249,8 @@ export class Database {
   }
 
   private getEnv(key: string): string | undefined {
-    return (globalThis as unknown as Env)[key];
+    // Env is not directly accessible here, but we can use process.env for Node.js compatibility
+    // In Cloudflare Workers, env vars are passed differently
+    return process.env[key];
   }
 }

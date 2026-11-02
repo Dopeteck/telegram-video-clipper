@@ -1,14 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { WebApp } from '@telegram-apps/sdk';
-
-interface UploadInfo {
-  uploadId: string;
-  objectKey: string;
-  multipartUploadId: string;
-  totalParts: number;
-  chunkSize: number;
-  partUrls: PartUrl[];
-}
+import { useState, useEffect, useRef, useCallback } from 'react';
 
 interface PartUrl {
   uploadId: string;
@@ -59,7 +49,6 @@ const UploadScreen: React.FC<Props> = ({ initData, uploadId: initialUploadId, on
   const uploadedPartsRef = useRef<Set<number>>(new Set());
   const totalPartsRef = useRef(0);
   const chunkSizeRef = useRef(0);
-  const objectKeyRef = useRef('');
 
   const apiRequest = useCallback(async (endpoint: string, options: RequestInit = {}) => {
     const response = await fetch(endpoint, {
@@ -122,7 +111,6 @@ const UploadScreen: React.FC<Props> = ({ initData, uploadId: initialUploadId, on
       });
 
       setUploadId(data.uploadId);
-      objectKeyRef.current = data.objectKey;
       totalPartsRef.current = data.totalParts;
       chunkSizeRef.current = data.chunkSize;
       
@@ -250,7 +238,8 @@ const UploadScreen: React.FC<Props> = ({ initData, uploadId: initialUploadId, on
 
       setCompleted(true);
       setUploading(false);
-      WebApp.close();
+      const tg = window.Telegram?.WebApp;
+      if (tg) tg.close();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to complete upload');
       setUploading(false);
