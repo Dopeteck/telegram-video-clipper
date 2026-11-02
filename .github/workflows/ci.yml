@@ -43,6 +43,7 @@ jobs:
 
   test-worker:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -64,12 +65,9 @@ jobs:
         working-directory: ./worker
         run: npm test
 
-      - name: Build worker
-        working-directory: ./worker
-        run: npx wrangler deploy --dry-run --env development 2>&1 | head -50 || true
-
   test-miniapp:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -95,6 +93,7 @@ jobs:
     needs: [test-python, test-worker, test-miniapp]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       deployments: write
@@ -127,6 +126,7 @@ jobs:
     needs: [test-python, test-worker, test-miniapp]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       deployments: write
