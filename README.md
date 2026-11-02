@@ -1,10 +1,49 @@
-<p align="center"><img src="assets/banner.svg" alt="Chopify — local video clipping and captions" width="880"></p>
+<p align="center"><img src="assets/banner.svg" alt="Telegram Video Clipper — local video clipping and captions" width="880"></p>
 
-# Chopify — free, local AI video clipper
+# Telegram Video Clipper
 
-**Turn long videos into captioned clips for YouTube Shorts, Instagram Reels, and TikTok, on your own computer.** Chopify is an open-source Python app with a local browser dashboard and a CLI. Import a recording or a video URL, find moments, correct captions, review drafts, and export MP4 clips with SRT subtitles. No subscription, API key, cloud upload, or watermark.
+**Upload videos from your phone to private cloud storage, then process them locally with Chopify.** This project combines a Telegram Mini App for mobile uploads with the Chopify video clipping engine for local processing.
 
-[Get started](#install-and-open-the-dashboard) · [Workflow guide](docs/WORKFLOWS.md) · [Agent/API reference](docs/AGENT-API.md) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Changelog](CHANGELOG.md)
+[Get started](#install-and-open-the-dashboard) · [Workflow guide](docs/WORKFLOWS.md) · [Agent/API reference](docs/AGENT-API.md) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Changelog](CHANGELOG.md) · [Cloudflare Deployment](docs/CLOUDFLARE_DEPLOYMENT.md)
+
+## Architecture
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│  Telegram Mini  │────▶│  Cloudflare R2   │     │   Chopify CLI   │
+│      App        │     │  (Private Bucket)│────▶│  (Local Engine) │
+└─────────────────┘     └──────────────────┘     └─────────────────┘
+        │                       │                        │
+        ▼                       ▼                        ▼
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│ Telegram Bot    │     │ Cloudflare D1    │     │  Local Dashboard│
+│ (Webhook + UI)  │     │ (Metadata/Jobs)  │     │  (Studio UI)    │
+└─────────────────┘     └──────────────────┘     └─────────────────┘
+```
+
+## Components
+
+| Component | Technology | Purpose |
+|-----------|------------|---------|
+| **Chopify Engine** | Python 3.11+ | Local video clipping, transcription, rendering |
+| **Telegram Mini App** | React + TypeScript | Mobile video upload interface |
+| **Cloudflare Worker** | TypeScript + Hono | API, auth, R2 multipart uploads, D1 metadata |
+| **Telegram Bot** | Python/TypeScript | Webhook handler, persistent keyboard, menu button |
+| **R2 Storage** | Cloudflare R2 | Private video storage (multipart uploads) |
+| **D1 Database** | Cloudflare D1 | Upload metadata, user preferences, job queue |
+
+## What can Telegram Video Clipper do?
+
+| Feature | How it helps |
+| --- | --- |
+| **Mobile video upload** | Select videos from phone gallery or record directly in Telegram |
+| **Direct-to-R2 multipart upload** | Large files (2 GB) upload in chunks directly to Cloudflare R2 |
+| **Resumable uploads** | Interrupted uploads resume from last successful chunk |
+| **Real-time progress** | See upload percentage and speed in Mini App |
+| **Telegram-native UI** | Persistent keyboard, menu button, inline buttons for actions |
+| **Private cloud storage** | Videos stored in private R2 bucket, never public |
+| **Local processing** | Downloaded videos processed by Chopify on your machine |
+| **Upload history** | View all uploads with status in Mini App and bot |
 
 ## What can Chopify do?
 
@@ -29,8 +68,8 @@ Clip selection favors sentence endings with punctuation. Scores are editing sugg
 Windows is the primary target. Use **Python 3.11+** and **ffmpeg/ffprobe with libx264, AAC, and subtitle rendering support**. Linux CI also checks the Python and ffmpeg workflows.
 
 ```powershell
-git clone https://github.com/mehbul/chopify.git
-cd chopify
+git clone https://github.com/Dopeteck/telegram-video-clipper.git
+cd telegram-video-clipper
 winget install Gyan.FFmpeg
 python -m venv .venv
 .venv\Scripts\python -m pip install -r requirements.txt
@@ -77,6 +116,70 @@ CLI single-video runs save state under `work/` and copy the latest exports to `c
 
 Successful stages resume by default. Use `--no-resume` to reprocess, or `--project projects/<id> --action render` to retry a batch project. Use `--action render` after manual caption/clip edits; `--action prepare` recalculates candidates when selection inputs change. A failed batch job does not prevent later videos from processing; the CLI exits nonzero if any job fails.
 
+## Telegram Mini App & Cloudflare Worker
+
+### Quick Start (requires Cloudflare account)
+
+```bash
+# 1. Configure worker secrets
+cd worker
+cp .dev.vars.example .dev.vars
+# Edit .dev.vars with your credentials
+
+# 2. Create Cloudflare resources
+wrangler r2 bucket create telegram-video-clipper-uploads
+wrangler d1 create telegram-video-clipper
+# Update wrangler.toml with database_id
+
+# 3. Apply migrations
+wrangler d1 migrations apply telegram-video-clipper --remote
+
+# 4. Configure R2 CORS (required for direct browser uploads)
+cat > cors.json << 'EOF'
+[
+  {
+    "AllowedOrigins": ["https://*.telegram.org", "https://web.telegram.org", "https://telegram.org"],
+    "AllowedMethods": ["GET", "PUT", "POST", "HEAD"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["ETag", "Content-Length"],
+    "MaxAgeSeconds": 3600
+  }
+]
+EOF
+wrangler r2 bucket cors put telegram-video-clipper-uploads --file cors.json
+
+# 5. Set worker secrets
+wrangler secret put TELEGRAM_BOT_TOKEN
+wrangler secret put TELEGRAM_WEBHOOK_SECRET
+wrangler secret put SESSION_SECRET
+wrangler secret put R2_ACCESS_KEY_ID
+wrangler secret put R2_SECRET_ACCESS_KEY
+
+# 6. Deploy worker
+npm run deploy
+
+# 7. Set up Telegram bot
+curl -X POST https://your-worker.your-subdomain.workers.dev/telegram/setup
+```
+
+See [Cloudflare Deployment Guide](docs/CLOUDFLARE_DEPLOYMENT.md) for detailed instructions.
+
+### Mini App Development
+
+```bash
+cd miniapp
+npm install
+npm run dev  # Runs at http://localhost:3000
+```
+
+### Worker Development
+
+```bash
+cd worker
+npm install
+npm run dev  # Runs at http://localhost:8787
+```
+
 ## Semantic search and optional local AI
 
 Default clip selection needs no LLM. For semantic search, install [Ollama](https://ollama.com), run it locally, and download an embedding model:
@@ -90,9 +193,9 @@ The embedding model runs on `127.0.0.1:11434`. Sentence embeddings are cached pe
 
 For optional LLM-based selection, download a local chat model separately and pass `--llm MODEL`. If it is unavailable, selection falls back to the heuristic. The GPU backend for faster-whisper is CUDA/NVIDIA; CPU transcription works without an NVIDIA GPU. `--device cpu|cuda|auto` controls transcription.
 
-## Is Chopify an alternative to Opus Clip?
+## Is Telegram Video Clipper an alternative to Opus Clip?
 
-Chopify is a free, MIT-licensed option for creators who want local clipping, captions, reframing, and review. It requires local installation and uses your computer's resources. It does not include cloud collaboration, automatic social publishing, or hosted processing. Compare the workflows and privacy requirements that matter to you; feature sets and pricing of other products change.
+Telegram Video Clipper is a free, MIT-licensed option for creators who want mobile upload, local clipping, captions, reframing, and review. It requires local installation for processing and uses your computer's resources. It does not include cloud collaboration, automatic social publishing, or hosted processing. Compare the workflows and privacy requirements that matter to you; feature sets and pricing of other products change.
 
 ## Frequently asked questions
 

@@ -1,0 +1,31 @@
+# Copy this file to .dev.vars and fill in your actual values
+# NEVER commit .dev.vars to version control
+
+# Telegram Bot Configuration
+TELEGRAM_BOT_TOKEN="your_bot_token_from_botfather"
+TELEGRAM_WEBHOOK_SECRET="your_webhook_secret_generate_with_openssl_rand_hex_32"
+TELEGRAM_WEBHOOK_URL="https://your-worker.your-subdomain.workers.dev/telegram/webhook"
+
+# Session Configuration
+SESSION_SECRET="generate_with_openssl_rand_hex_32"
+
+# Cloudflare R2 Configuration
+R2_ACCOUNT_ID="your_cloudflare_account_id"
+R2_BUCKET="telegram-video-clipper-uploads"
+R2_ACCESS_KEY_ID="your_r2_access_key_id"
+R2_SECRET_ACCESS_KEY="your_r2_secret_access_key"
+R2_PUBLIC_URL="https://pub-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.r2.dev"
+
+# Application Configuration
+APP_ORIGIN="https://your-worker.your-subdomain.workers.dev"
+MAX_UPLOAD_BYTES="2147483648"
+CHUNK_SIZE="5242880"
+MAX_CONCURRENT_CHUNKS="3"
+UPLOAD_EXPIRY_HOURS="24"
+CLEANUP_INTERVAL_MINUTES="60"
+MAX_CONCURRENT_UPLOADS_PER_USER="2"
+RATE_LIMIT_WINDOW_SECONDS="60"
+RATE_LIMIT_MAX_REQUESTS="30"
+
+# D1 Database (automatically bound via wrangler.toml)
+# DB binding is configured in wrangler.toml

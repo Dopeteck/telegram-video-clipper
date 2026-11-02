@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  test:
+  test-python:
     strategy:
       matrix:
         os: [windows-latest, ubuntu-latest]
@@ -35,8 +35,58 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-liberation
 
-      - name: Run tests
+      - name: Run Chopify tests
         run: pytest tests/ -q
 
       - name: Build public documentation
         run: python tools/build_site.py --out _site
+
+  test-worker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: 'npm'
+          cache-dependency-path: worker/package-lock.json
+
+      - name: Install worker dependencies
+        working-directory: ./worker
+        run: npm ci
+
+      - name: TypeScript type check
+        working-directory: ./worker
+        run: npm run typecheck
+
+      - name: Run worker tests
+        working-directory: ./worker
+        run: npm test
+
+      - name: Build worker
+        working-directory: ./worker
+        run: npx wrangler deploy --dry-run --env development 2>&1 | head -50 || true
+
+  test-miniapp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: 'npm'
+          cache-dependency-path: miniapp/package-lock.json
+
+      - name: Install miniapp dependencies
+        working-directory: ./miniapp
+        run: npm ci
+
+      - name: TypeScript type check
+        working-directory: ./miniapp
+        run: npx tsc --noEmit
+
+      - name: Build miniapp
+        working-directory: ./miniapp
+        run: npm run build

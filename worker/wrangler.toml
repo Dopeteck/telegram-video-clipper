@@ -1,0 +1,33 @@
+name = "telegram-video-clipper-worker"
+main = "src/index.ts"
+compatibility_date = "2024-01-15"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+APP_ORIGIN = "https://telegram-video-clipper.example.com"
+MAX_UPLOAD_BYTES = "2147483648"
+CHUNK_SIZE = "5242880"
+MAX_CONCURRENT_CHUNKS = "3"
+UPLOAD_EXPIRY_HOURS = "24"
+CLEANUP_INTERVAL_MINUTES = "60"
+MAX_CONCURRENT_UPLOADS_PER_USER = "2"
+RATE_LIMIT_WINDOW_SECONDS = "60"
+RATE_LIMIT_MAX_REQUESTS = "30"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "telegram-video-clipper"
+database_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+[[r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "telegram-video-clipper-uploads"
+
+[build]
+command = "npm run build"
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[observability]
+enabled = true
