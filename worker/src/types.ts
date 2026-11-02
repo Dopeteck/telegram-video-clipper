@@ -1,6 +1,7 @@
 export interface Env {
   DB: D1Database;
   R2_BUCKET: R2Bucket;
+  R2_BUCKET_NAME: string;
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
   SESSION_SECRET: string;

@@ -13,6 +13,7 @@ CLEANUP_INTERVAL_MINUTES = "60"
 MAX_CONCURRENT_UPLOADS_PER_USER = "2"
 RATE_LIMIT_WINDOW_SECONDS = "60"
 RATE_LIMIT_MAX_REQUESTS = "30"
+R2_BUCKET_NAME = "telegram-video-clipper-uploads"
 
 [[d1_databases]]
 binding = "DB"
@@ -27,7 +28,7 @@ bucket_name = "telegram-video-clipper-uploads"
 command = "npm run build"
 
 [triggers]
-crons = ["*/5 * * * *"]
+crons = ["*/5 * * *"]
 
 [observability]
 enabled = true

@@ -71,7 +71,7 @@ export class TelegramBot {
     this.webhookSecret = env.TELEGRAM_WEBHOOK_SECRET;
     this.appOrigin = env.APP_ORIGIN;
     this.maxUploadBytes = parseInt(env.MAX_UPLOAD_BYTES || '2147483648', 10);
-    this.db = new Database(env.DB);
+    this.db = new Database(env.DB, env);
     this.r2 = new R2Uploader(env);
   }
 
@@ -319,9 +319,9 @@ export class TelegramBot {
     await this.db.createUser({
       telegram_user_id: user.id,
       first_name: user.first_name,
-      last_name: user.last_name,
-      username: user.username,
-      language_code: user.language_code,
+      last_name: user.last_name ?? null,
+      username: user.username ?? null,
+      language_code: user.language_code ?? null,
       preferred_aspect_ratio: '9:16',
       preferred_caption_style: 'default',
       enable_tighten: 0,
@@ -352,7 +352,7 @@ export class TelegramBot {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chat_id: chatId, text, ...options }),
     });
-    const data = await response.json();
+    const data = await response.json() as { ok: boolean; description?: string };
     return createApiResponse(data.ok, data, data.description);
   }
 
@@ -363,7 +363,7 @@ export class TelegramBot {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chat_id: chatId, message_id: messageId, text, ...options }),
     });
-    const data = await response.json();
+    const data = await response.json() as { ok: boolean; description?: string };
     return createApiResponse(data.ok, data, data.description);
   }
 
@@ -374,7 +374,7 @@ export class TelegramBot {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ callback_query_id: callbackQueryId, text }),
     });
-    const data = await response.json();
+    const data = await response.json() as { ok: boolean; description?: string };
     return createApiResponse(data.ok, data, data.description);
   }
 
@@ -385,13 +385,13 @@ export class TelegramBot {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url: webhookUrl, secret_token: this.webhookSecret }),
     });
-    const data = await response.json();
+    const data = await response.json() as { ok: boolean; description?: string };
     return createApiResponse(data.ok, data, data.description);
   }
 
   async deleteWebhook(): Promise<ApiResponse> {
     const response = await fetch(`https://api.telegram.org/bot${this.botToken}/deleteWebhook`, { method: 'POST' });
-    const data = await response.json();
+    const data = await response.json() as { ok: boolean; description?: string };
     return createApiResponse(data.ok, data, data.description);
   }
 
@@ -407,7 +407,7 @@ export class TelegramBot {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ commands }),
     });
-    const data = await response.json();
+    const data = await response.json() as { ok: boolean; description?: string };
     return createApiResponse(data.ok, data, data.description);
   }
 
@@ -423,7 +423,7 @@ export class TelegramBot {
         },
       }),
     });
-    const data = await response.json();
+    const data = await response.json() as { ok: boolean; description?: string };
     return createApiResponse(data.ok, data, data.description);
   }
 }

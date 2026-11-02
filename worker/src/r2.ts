@@ -12,7 +12,7 @@ export class R2Uploader {
   private maxConcurrentChunks: number;
 
   constructor(env: Env) {
-    this.bucket = env.R2_BUCKET;
+    this.bucket = env.R2_BUCKET_NAME || 'telegram-video-clipper-uploads';
     this.accountId = env.R2_ACCOUNT_ID;
     this.accessKeyId = env.R2_ACCESS_KEY_ID;
     this.secretAccessKey = env.R2_SECRET_ACCESS_KEY;

@@ -2,16 +2,17 @@ import { Env, Upload, UploadPart, User, Job } from './types';
 import { generateId } from './utils';
 
 export class Database {
-  constructor(private db: D1Database) {}
+  constructor(private db: D1Database, private env?: Env) {}
 
-  async createUpload(upload: Omit<Upload, 'id' | 'created_at' | 'updated_at'> & { id?: string }): Promise<Upload> {
+  async createUpload(upload: Omit<Upload, 'id' | 'created_at' | 'updated_at' | 'multipart_upload_id' | 'expires_at' | 'completed_etag' | 'completed_size' | 'error_message'> & { id?: string }): Promise<Upload> {
     const id = upload.id || generateId();
     const now = Date.now();
-    const expiresAt = now + (parseInt(this.getEnv('UPLOAD_EXPIRY_HOURS') || '24') * 3600 * 1000);
+    const expiryHours = parseInt(this.env?.UPLOAD_EXPIRY_HOURS || '24', 10);
+    const expiresAt = now + (expiryHours * 3600 * 1000);
 
     await this.db.prepare(`
-      INSERT INTO uploads (id, telegram_user_id, telegram_chat_id, original_filename, object_key, file_size, mime_type, multipart_upload_id, status, created_at, updated_at, expires_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO uploads (id, telegram_user_id, telegram_chat_id, original_filename, object_key, file_size, mime_type, multipart_upload_id, status, created_at, updated_at, expires_at, completed_etag, completed_size, error_message)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       id,
       upload.telegram_user_id,
@@ -20,11 +21,14 @@ export class Database {
       upload.object_key,
       upload.file_size,
       upload.mime_type,
-      upload.multipart_upload_id,
+      null, // multipart_upload_id
       upload.status,
       now,
       now,
-      expiresAt
+      expiresAt,
+      null, // completed_etag
+      null, // completed_size
+      null  // error_message
     ).run();
 
     const result = await this.getUpload(id);
@@ -246,11 +250,5 @@ export class Database {
       SELECT * FROM jobs WHERE status IN ('pending', 'queued') ORDER BY created_at ASC LIMIT ?
     `).bind(limit).all<Job>();
     return results.results || [];
-  }
-
-  private getEnv(key: string): string | undefined {
-    // Env is not directly accessible here, but we can use process.env for Node.js compatibility
-    // In Cloudflare Workers, env vars are passed differently
-    return process.env[key];
   }
 }

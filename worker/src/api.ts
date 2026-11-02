@@ -55,7 +55,7 @@ api.post('/upload/initiate', async (c) => {
     return c.json(createApiResponse(false, undefined, 'Empty file'), 400);
   }
 
-  const db = new Database(c.env.DB);
+  const db = new Database(c.env.DB, c.env);
   const r2 = new R2Uploader(c.env);
 
   const uploadId = `upload_${Date.now()}_${user.id}`;
@@ -99,7 +99,7 @@ api.post('/upload/part-urls', async (c) => {
     return c.json(createApiResponse(false, undefined, 'Missing required fields'), 400);
   }
 
-  const db = new Database(c.env.DB);
+  const db = new Database(c.env.DB, c.env);
   const upload = await db.getUpload(uploadId);
   
   if (!upload || upload.telegram_user_id !== user.id) {
@@ -125,7 +125,7 @@ api.post('/upload/complete', async (c) => {
     return c.json(createApiResponse(false, undefined, 'Missing required fields'), 400);
   }
 
-  const db = new Database(c.env.DB);
+  const db = new Database(c.env.DB, c.env);
   const upload = await db.getUpload(uploadId);
   
   if (!upload || upload.telegram_user_id !== user.id) {
@@ -188,7 +188,7 @@ api.post('/upload/abort', async (c) => {
     return c.json(createApiResponse(false, undefined, 'Missing uploadId'), 400);
   }
 
-  const db = new Database(c.env.DB);
+  const db = new Database(c.env.DB, c.env);
   const upload = await db.getUpload(uploadId);
   
   if (!upload || upload.telegram_user_id !== user.id) {
@@ -209,7 +209,7 @@ api.get('/upload/status/:uploadId', async (c) => {
   const user = c.get('telegramUser');
   const uploadId = c.req.param('uploadId');
   
-  const db = new Database(c.env.DB);
+  const db = new Database(c.env.DB, c.env);
   const upload = await db.getUpload(uploadId);
   
   if (!upload || upload.telegram_user_id !== user.id) {
@@ -238,7 +238,7 @@ api.get('/uploads', async (c) => {
   const limit = parseInt(c.req.query('limit') || '50', 10);
   const offset = parseInt(c.req.query('offset') || '0', 10);
   
-  const db = new Database(c.env.DB);
+  const db = new Database(c.env.DB, c.env);
   const uploads = await db.getUserUploads(user.id, limit, offset);
   
   const response: UserUploadsResponse = { uploads };
@@ -247,7 +247,7 @@ api.get('/uploads', async (c) => {
 
 api.get('/user/profile', async (c) => {
   const user = c.get('telegramUser');
-  const db = new Database(c.env.DB);
+  const db = new Database(c.env.DB, c.env);
   const profile = await db.getUser(user.id);
   return c.json(createApiResponse(true, profile));
 });
@@ -255,7 +255,7 @@ api.get('/user/profile', async (c) => {
 api.post('/user/profile', async (c) => {
   const user = c.get('telegramUser');
   const body = await c.req.json();
-  const db = new Database(c.env.DB);
+  const db = new Database(c.env.DB, c.env);
   const profile = await db.updateUser(user.id, body);
   return c.json(createApiResponse(true, profile));
 });

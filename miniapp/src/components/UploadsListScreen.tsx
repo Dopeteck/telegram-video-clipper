@@ -20,7 +20,6 @@ interface Props {
 const UploadsListScreen: React.FC<Props> = ({ initData, onNavigate }) => {
   const [uploads, setUploads] = useState<Upload[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
   const apiRequest = useCallback(async (endpoint: string, options: RequestInit = {}) => {
     const response = await fetch(endpoint, {
@@ -42,7 +41,7 @@ const UploadsListScreen: React.FC<Props> = ({ initData, onNavigate }) => {
       const data = await apiRequest('/api/uploads?limit=20');
       setUploads(data.uploads || []);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load uploads');
+      console.error('Failed to load uploads:', e);
     } finally {
       setLoading(false);
     }
@@ -89,7 +88,7 @@ const UploadsListScreen: React.FC<Props> = ({ initData, onNavigate }) => {
       onNavigate('upload');
       window.location.href = `/upload?upload_id=${uploadId}`;
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to resume');
+      console.error('Failed to resume upload:', e);
     }
   };
 
