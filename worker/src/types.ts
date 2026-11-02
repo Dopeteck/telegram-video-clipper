@@ -216,6 +216,23 @@ export interface TelegramInlineKeyboardButton {
   pay?: boolean;
 }
 
+export interface TelegramKeyboardButton {
+  text: string;
+  request_contact?: boolean;
+  request_location?: boolean;
+  request_poll?: { type: string };
+  web_app?: TelegramWebAppInfo;
+}
+
+export interface TelegramReplyKeyboardMarkup {
+  keyboard: TelegramKeyboardButton[][];
+  resize_keyboard?: boolean;
+  persistent?: boolean;
+  one_time_keyboard?: boolean;
+  input_field_placeholder?: string;
+  selective?: boolean;
+}
+
 export interface TelegramWebAppInfo {
   url: string;
 }

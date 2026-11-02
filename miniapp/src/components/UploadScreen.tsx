@@ -147,7 +147,7 @@ const UploadScreen: React.FC<Props> = ({ initData, uploadId: initialUploadId, on
 
       const { partUrls } = await apiRequest('/api/upload/part-urls', {
         method: 'POST',
-        body: JSON.stringify({ uploadId, partNumbers: missingParts.slice(0, 3) }),
+        body: JSON.stringify({ uploadId, partNumbers: missingParts }),
       });
 
       await uploadParts(partUrls);
@@ -180,6 +180,11 @@ const UploadScreen: React.FC<Props> = ({ initData, uploadId: initialUploadId, on
       
       const etag = response.headers.get('ETag')?.replace(/"/g, '');
       if (!etag) throw new Error(`Missing ETag for part ${partUrl.partNumber}`);
+
+      await apiRequest('/api/upload/part-complete', {
+        method: 'POST',
+        body: JSON.stringify({ uploadId, partNumber: partUrl.partNumber, etag, size: blob.size }),
+      });
 
       uploadedPartsRef.current.add(partUrl.partNumber);
       updateProgress();
@@ -227,16 +232,9 @@ const UploadScreen: React.FC<Props> = ({ initData, uploadId: initialUploadId, on
     if (!uploadId) return;
     
     try {
-      const parts = Array.from(uploadedPartsRef.current)
-        .sort((a, b) => a - b)
-        .map(partNumber => {
-          const part = status?.parts.find((p: any) => p.part_number === partNumber);
-          return { partNumber, etag: part?.etag || '' };
-        });
-
       await apiRequest('/api/upload/complete', {
         method: 'POST',
-        body: JSON.stringify({ uploadId, parts }),
+        body: JSON.stringify({ uploadId }),
       });
 
       setCompleted(true);

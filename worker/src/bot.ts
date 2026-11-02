@@ -1,19 +1,18 @@
-import { Env, TelegramWebhookUpdate, TelegramMessage, TelegramUser, TelegramInlineKeyboardMarkup, TelegramInlineKeyboardButton, TelegramWebAppInfo, ApiResponse, TelegramCallbackQuery, TelegramInlineQuery } from './types';
+import { Env, TelegramWebhookUpdate, TelegramMessage, TelegramUser, TelegramReplyKeyboardMarkup, TelegramKeyboardButton, TelegramWebAppInfo, ApiResponse, TelegramCallbackQuery, TelegramInlineQuery } from './types';
 import { validateTelegramInitData, createApiResponse, sanitizeFilename, validateMimeType, validateFileExtension, getExtensionFromMimeType } from './utils';
 import { Database } from './db';
 import { R2Uploader } from './r2';
 
-const MAIN_KEYBOARD: TelegramInlineKeyboardMarkup = {
-  inline_keyboard: [
-    [
-      { text: '🎬 Upload Video', web_app: { url: '' } },
-      { text: '📂 My Uploads', callback_data: 'my_uploads' },
-    ],
-    [
-      { text: '⚙️ Settings', callback_data: 'settings' },
-      { text: '❓ Help', callback_data: 'help' },
-    ],
+const MAIN_KEYBOARD: TelegramReplyKeyboardMarkup = {
+  keyboard: [
+    [{ text: '🎬 Upload Video', web_app: { url: '' } }],
+    [{ text: '📂 My Uploads' }],
+    [{ text: '⚙️ Settings' }],
+    [{ text: '❓ Help' }],
   ],
+  resize_keyboard: true,
+  persistent: true,
+  one_time_keyboard: false,
 };
 
 const HELP_MESSAGE = `
@@ -34,12 +33,6 @@ const HELP_MESSAGE = `
 
 <b>Supported Formats:</b> MP4, MOV, MKV, WebM, M4V, AVI
 <b>Max File Size:</b> 2 GB
-
-<b>Buttons:</b>
-• 🎬 Upload Video — Opens the upload interface
-• 📂 My Uploads — View your upload history and status
-• ⚙️ Settings — Configure processing preferences
-• ❓ Help — Show this message
 
 For support, contact the bot administrator.
 `;
@@ -96,29 +89,45 @@ export class TelegramBot {
 
     await this.upsertUser(message.from!);
 
+    const keyboard = this.getMainKeyboard();
+
     if (message.text === '/start') {
       return this.sendWelcomeMessage(chatId, userId);
     }
 
     if (message.text === '/help') {
-      return this.sendMessage(chatId, HELP_MESSAGE, { parse_mode: 'HTML' });
+      return this.sendMessage(chatId, HELP_MESSAGE, { parse_mode: 'HTML', reply_markup: keyboard });
     }
 
     if (message.text === '/settings') {
-      return this.sendMessage(chatId, SETTINGS_MESSAGE, { parse_mode: 'HTML' });
+      return this.sendMessage(chatId, SETTINGS_MESSAGE, { parse_mode: 'HTML', reply_markup: keyboard });
     }
 
     if (message.text === '/uploads') {
       return this.showUserUploads(chatId, userId);
     }
 
+    if (message.text === '🎬 Upload Video') {
+      return this.sendMessage(chatId, 'Tap the button below to upload a video:', { reply_markup: keyboard });
+    }
+
+    if (message.text === '📂 My Uploads') {
+      return this.showUserUploads(chatId, userId);
+    }
+
+    if (message.text === '⚙️ Settings') {
+      return this.sendMessage(chatId, SETTINGS_MESSAGE, { parse_mode: 'HTML', reply_markup: keyboard });
+    }
+
+    if (message.text === '❓ Help') {
+      return this.sendMessage(chatId, HELP_MESSAGE, { parse_mode: 'HTML', reply_markup: keyboard });
+    }
+
     if (message.document || message.video) {
       return this.handleMediaUpload(message, userId, chatId);
     }
 
-    return this.sendMessage(chatId, 'Use the buttons below or type /help for instructions.', {
-      reply_markup: this.getMainKeyboard(),
-    });
+    return this.sendMessage(chatId, 'Use the buttons below or type /help for instructions.', { reply_markup: keyboard });
   }
 
   private async handleCallbackQuery(query: TelegramCallbackQuery): Promise<ApiResponse> {
@@ -201,14 +210,17 @@ export class TelegramBot {
     const initResponse = await this.r2.initiateMultipartUpload(objectKey, mimeType);
     await this.db.updateUpload(uploadId, { multipart_upload_id: initResponse.uploadId });
 
+    const keyboard = this.getMainKeyboard();
+    const uploadButtonKeyboard = {
+      inline_keyboard: [
+        [{ text: '🚀 Start Upload', web_app: { url: `${this.appOrigin}/miniapp/upload?upload_id=${uploadId}` } }],
+        [{ text: '❌ Cancel', callback_data: `upload_cancel_${uploadId}` }],
+      ],
+    };
+
     return this.sendMessage(chatId, `📤 <b>Upload Ready</b>\n\nFile: <code>${fileName}</code>\nSize: ${this.formatBytes(fileSize)}\n\nTap the button below to start uploading:`, {
       parse_mode: 'HTML',
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '🚀 Start Upload', web_app: { url: `${this.appOrigin}/upload?upload_id=${uploadId}` } }],
-          [{ text: '❌ Cancel', callback_data: `upload_cancel_${uploadId}` }],
-        ],
-      },
+      reply_markup: uploadButtonKeyboard,
     });
   }
 
@@ -243,7 +255,7 @@ export class TelegramBot {
           parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
-              [{ text: '🚀 Resume Upload', web_app: { url: `${this.appOrigin}/upload?upload_id=${uploadId}` } }],
+              [{ text: '🚀 Resume Upload', web_app: { url: `${this.appOrigin}/miniapp/upload?upload_id=${uploadId}` } }],
               [{ text: '❌ Cancel', callback_data: `upload_cancel_${uploadId}` }],
             ],
           },
@@ -334,14 +346,17 @@ export class TelegramBot {
     return this.sendMessage(chatId, text, { parse_mode: 'HTML', reply_markup: this.getMainKeyboard() });
   }
 
-  private getMainKeyboard(): TelegramInlineKeyboardMarkup {
+  private getMainKeyboard(): TelegramReplyKeyboardMarkup {
     return {
-      inline_keyboard: [
-        [{ text: '🎬 Upload Video', web_app: { url: `${this.appOrigin}/upload` } }],
-        [{ text: '📂 My Uploads', callback_data: 'my_uploads' }],
-        [{ text: '⚙️ Settings', callback_data: 'settings' }],
-        [{ text: '❓ Help', callback_data: 'help' }],
+      keyboard: [
+        [{ text: '🎬 Upload Video', web_app: { url: `${this.appOrigin}/miniapp/upload` } }],
+        [{ text: '📂 My Uploads' }],
+        [{ text: '⚙️ Settings' }],
+        [{ text: '❓ Help' }],
       ],
+      resize_keyboard: true,
+      persistent: true,
+      one_time_keyboard: false,
     };
   }
 
@@ -419,7 +434,7 @@ export class TelegramBot {
         menu_button: {
           type: 'web_app',
           text: '🎬 Upload Video',
-          web_app: { url: `${this.appOrigin}/upload` },
+          web_app: { url: `${this.appOrigin}/miniapp/upload` },
         },
       }),
     });

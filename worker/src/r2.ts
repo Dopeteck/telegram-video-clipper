@@ -9,14 +9,12 @@ export class R2Uploader {
   private accountId: string;
   private accessKeyId: string;
   private secretAccessKey: string;
-  private maxConcurrentChunks: number;
 
   constructor(env: Env) {
     this.bucket = env.R2_BUCKET_NAME || 'telegram-video-clipper-uploads';
     this.accountId = env.R2_ACCOUNT_ID;
     this.accessKeyId = env.R2_ACCESS_KEY_ID;
     this.secretAccessKey = env.R2_SECRET_ACCESS_KEY;
-    this.maxConcurrentChunks = parseInt(env.MAX_CONCURRENT_CHUNKS || '3', 10);
 
     this.client = new S3Client({
       region: 'auto',
@@ -31,6 +29,7 @@ export class R2Uploader {
   async initiateMultipartUpload(
     key: string,
     contentType: string,
+    totalParts: number,
     expiresIn = 3600
   ): Promise<InitiateMultipartResponse> {
     const command = new CreateMultipartUploadCommand({
@@ -44,7 +43,7 @@ export class R2Uploader {
 
     const partUrls: PresignedUrlResponse[] = [];
 
-    for (let partNumber = 1; partNumber <= this.maxConcurrentChunks; partNumber++) {
+    for (let partNumber = 1; partNumber <= totalParts; partNumber++) {
       const partCommand = new UploadPartCommand({
         Bucket: this.bucket,
         Key: key,

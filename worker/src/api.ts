@@ -61,6 +61,9 @@ api.post('/upload/initiate', async (c) => {
   const uploadId = `upload_${Date.now()}_${user.id}`;
   const objectKey = `uploads/${user.id}/${uploadId}/${sanitizeFilename(filename)}`;
 
+  const chunkSize = parseInt(c.env.CHUNK_SIZE || '5242880', 10);
+  const totalParts = Math.ceil(fileSize / chunkSize);
+
   const upload = await db.createUpload({
     id: uploadId,
     telegram_user_id: user.id,
@@ -72,12 +75,7 @@ api.post('/upload/initiate', async (c) => {
     status: 'uploading',
   });
 
-  const chunkSize = parseInt(c.env.CHUNK_SIZE || '5242880', 10);
-  const totalParts = Math.ceil(fileSize / chunkSize);
-  const maxConcurrentChunks = parseInt(c.env.MAX_CONCURRENT_CHUNKS || '3', 10);
-  const initialParts = Math.min(totalParts, maxConcurrentChunks);
-
-  const initResponse = await r2.initiateMultipartUpload(objectKey, mimeType);
+  const initResponse = await r2.initiateMultipartUpload(objectKey, mimeType, totalParts);
   await db.updateUpload(uploadId, { multipart_upload_id: initResponse.uploadId });
 
   return c.json(createApiResponse(true, {
@@ -86,7 +84,7 @@ api.post('/upload/initiate', async (c) => {
     multipartUploadId: initResponse.uploadId,
     totalParts,
     chunkSize,
-    partUrls: initResponse.partUrls.slice(0, initialParts),
+    partUrls: initResponse.partUrls,
   }));
 });
 
@@ -116,13 +114,42 @@ api.post('/upload/part-urls', async (c) => {
   return c.json(createApiResponse(true, { partUrls }));
 });
 
+api.post('/upload/part-complete', async (c) => {
+  const user = c.get('telegramUser');
+  const body = await c.req.json();
+  
+  const { uploadId, partNumber, etag, size } = body;
+  if (!uploadId || !partNumber || !etag) {
+    return c.json(createApiResponse(false, undefined, 'Missing required fields'), 400);
+  }
+
+  const db = new Database(c.env.DB, c.env);
+  const upload = await db.getUpload(uploadId);
+  
+  if (!upload || upload.telegram_user_id !== user.id) {
+    return c.json(createApiResponse(false, undefined, 'Upload not found'), 404);
+  }
+
+  if (!upload.multipart_upload_id) {
+    return c.json(createApiResponse(false, undefined, 'Multipart upload not initialized'), 400);
+  }
+
+  if (partNumber < 1 || partNumber > Math.ceil(upload.file_size / parseInt(c.env.CHUNK_SIZE || '5242880', 10))) {
+    return c.json(createApiResponse(false, undefined, 'Invalid part number'), 400);
+  }
+
+  await db.updateUploadPart(uploadId, partNumber, etag, size || 0);
+
+  return c.json(createApiResponse(true, { ok: true }));
+});
+
 api.post('/upload/complete', async (c) => {
   const user = c.get('telegramUser');
   const body = await c.req.json();
   
-  const { uploadId, parts } = body;
-  if (!uploadId || !Array.isArray(parts) || parts.length === 0) {
-    return c.json(createApiResponse(false, undefined, 'Missing required fields'), 400);
+  const { uploadId } = body;
+  if (!uploadId) {
+    return c.json(createApiResponse(false, undefined, 'Missing uploadId'), 400);
   }
 
   const db = new Database(c.env.DB, c.env);
@@ -140,13 +167,29 @@ api.post('/upload/complete', async (c) => {
     return c.json(createApiResponse(false, undefined, 'Upload not in progress'), 400);
   }
 
+  const chunkSize = parseInt(c.env.CHUNK_SIZE || '5242880', 10);
+  const totalParts = Math.ceil(upload.file_size / chunkSize);
+
+  const parts = await db.getUploadParts(uploadId);
+  const uploadedPartNumbers = parts.filter(p => p.etag).map(p => p.part_number).sort((a, b) => a - b);
+  
+  if (uploadedPartNumbers.length !== totalParts) {
+    return c.json(createApiResponse(false, undefined, `Missing parts: expected ${totalParts}, got ${uploadedPartNumbers.length}`), 400);
+  }
+
+  for (let i = 1; i <= totalParts; i++) {
+    if (!uploadedPartNumbers.includes(i)) {
+      return c.json(createApiResponse(false, undefined, `Missing part ${i}`), 400);
+    }
+  }
+
   const r2 = new R2Uploader(c.env);
   
   try {
     const result = await r2.completeMultipartUpload({
       uploadId: upload.multipart_upload_id,
       key: upload.object_key,
-      parts: parts.map(p => ({ partNumber: p.partNumber, etag: p.etag })),
+      parts: parts.map(p => ({ partNumber: p.part_number, etag: p.etag! })),
     });
 
     const verified = await r2.verifyObject(upload.object_key, upload.file_size);
@@ -201,6 +244,7 @@ api.post('/upload/abort', async (c) => {
   }
 
   await db.updateUpload(uploadId, { status: 'aborted', error_message: 'Aborted by user' });
+  await db.deleteUploadParts(uploadId);
 
   return c.json(createApiResponse(true, { ok: true }));
 });
