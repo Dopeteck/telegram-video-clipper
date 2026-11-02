@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { Env, ApiResponse, PresignedUrlResponse, InitiateMultipartResponse, CompleteMultipartRequest, UploadStatusResponse, UserUploadsResponse, TelegramUser, TelegramChat } from './types';
+import { Env, ApiResponse, PresignedUrlResponse, InitiateMultipartResponse, CompleteMultipartRequest, UploadStatusResponse, UserUploadsResponse, TelegramUser, TelegramChat, Job } from './types';
 import { validateTelegramInitData, createApiResponse, generateId, sanitizeFilename, validateMimeType, validateFileExtension, getExtensionFromMimeType } from './utils';
 import { Database } from './db';
 import { R2Uploader } from './r2';
@@ -9,7 +9,7 @@ type ApiVariables = {
   telegramChat: TelegramChat | null;
 };
 
-export const api = new Hono<{ Bindings: Env; Variables: ApiVariables }>();
+const api = new Hono<{ Bindings: Env; Variables: ApiVariables }>();
 
 api.use('*', async (c, next) => {
   const authHeader = c.req.header('Authorization');
@@ -307,3 +307,144 @@ api.post('/user/profile', async (c) => {
 api.get('/health', (c) => {
   return c.json(createApiResponse(true, { status: 'ok', timestamp: Date.now() }));
 });
+
+// Internal API for GitHub Actions (authenticated via worker secret)
+const internalApi = new Hono<{ Bindings: Env }>();
+
+internalApi.use('*', async (c, next) => {
+  const authHeader = c.req.header('Authorization');
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return c.json(createApiResponse(false, undefined, 'Missing or invalid authorization'), 401);
+  }
+
+  const token = authHeader.substring(7);
+  if (token !== c.env.WORKER_SECRET) {
+    return c.json(createApiResponse(false, undefined, 'Invalid worker secret'), 401);
+  }
+
+  await next();
+});
+
+internalApi.get('/jobs/:jobId', async (c) => {
+  const jobId = c.req.param('jobId');
+  const db = new Database(c.env.DB, c.env);
+  const job = await db.getJob(jobId);
+  
+  if (!job) {
+    return c.json(createApiResponse(false, undefined, 'Job not found'), 404);
+  }
+
+  return c.json(createApiResponse(true, job));
+});
+
+internalApi.post('/jobs/:jobId/complete', async (c) => {
+  const jobId = c.req.param('jobId');
+  const body = await c.req.json();
+  
+  const { clips, status, error_message } = body;
+  if (!clips || !Array.isArray(clips) || !status) {
+    return c.json(createApiResponse(false, undefined, 'Missing required fields'), 400);
+  }
+
+  const db = new Database(c.env.DB, c.env);
+  const job = await db.getJob(jobId);
+  
+  if (!job) {
+    return c.json(createApiResponse(false, undefined, 'Job not found'), 404);
+  }
+
+  const updates: Partial<Job> = {
+    status: status as Job['status'],
+    clip_count: clips.length,
+    completed_at: Date.now(),
+  };
+  
+  if (error_message) {
+    updates.error_message = error_message;
+  }
+
+  const updatedJob = await db.updateJob(jobId, updates);
+  
+  return c.json(createApiResponse(true, updatedJob));
+});
+
+internalApi.post('/jobs', async (c) => {
+  const body = await c.req.json();
+  
+  const { uploadId, telegramUserId, aspectRatio, captionStyle, enableTighten, enableLoudnorm } = body;
+  if (!uploadId || !telegramUserId) {
+    return c.json(createApiResponse(false, undefined, 'Missing required fields'), 400);
+  }
+
+  const db = new Database(c.env.DB, c.env);
+  const upload = await db.getUpload(uploadId);
+  
+  if (!upload) {
+    return c.json(createApiResponse(false, undefined, 'Upload not found'), 404);
+  }
+
+  const jobId = `job_${Date.now()}_${telegramUserId}`;
+  
+  const job = await db.createJob({
+    id: jobId,
+    upload_id: uploadId,
+    telegram_user_id: telegramUserId,
+    status: 'pending',
+    aspect_ratio: aspectRatio || '9:16',
+    caption_style: captionStyle || 'default',
+    enable_tighten: enableTighten ? 1 : 0,
+    enable_loudnorm: enableLoudnorm ? 1 : 0,
+    clip_count: 0,
+    error_message: null,
+    completed_at: null,
+  });
+
+  // Dispatch GitHub Actions workflow
+  try {
+    await dispatchWorkflow(c.env, jobId, uploadId, telegramUserId);
+  } catch (e) {
+    console.error('Failed to dispatch workflow:', e);
+    // Don't fail the request, just log the error
+  }
+
+  return c.json(createApiResponse(true, job));
+});
+
+async function dispatchWorkflow(env: Env, jobId: string, uploadId: string, telegramUserId: number): Promise<void> {
+  const githubToken = env.GITHUB_TOKEN;
+  const githubRepo = env.GITHUB_REPO || 'Dopeteck/telegram-video-clipper';
+  
+  if (!githubToken) {
+    console.warn('GITHUB_TOKEN not configured, skipping workflow dispatch');
+    return;
+  }
+
+  const upload = await (await import('./db')).Database.prototype.getUpload.call(new (await import('./db')).Database(env.DB, env), uploadId);
+  
+  const response = await fetch(`https://api.github.com/repos/${githubRepo}/dispatches`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${githubToken}`,
+      'Accept': 'application/vnd.github.v3+json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      event_type: 'process-video',
+      client_payload: {
+        job_id: jobId,
+        upload_id: uploadId,
+        telegram_user_id: telegramUserId,
+        object_key: upload?.object_key || `uploads/${telegramUserId}/${uploadId}/`,
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`GitHub dispatch failed: ${response.status} ${error}`);
+  }
+
+  console.log(`Dispatched process-video workflow for job ${jobId}`);
+}
+
+export { api, internalApi };

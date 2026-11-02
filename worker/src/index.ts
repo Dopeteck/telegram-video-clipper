@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { Env } from './types';
-import { api } from './api';
+import { api, internalApi } from './api';
 import { TelegramBot } from './bot';
 
 const app = new Hono<{ Bindings: Env }>();
@@ -14,6 +14,7 @@ app.use('*', cors({
 }));
 
 app.route('/api', api);
+app.route('/api/internal', internalApi);
 
 app.post('/telegram/webhook', async (c) => {
   const secretToken = c.req.header('X-Telegram-Bot-Api-Secret-Token');

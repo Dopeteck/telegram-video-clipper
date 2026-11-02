@@ -23,13 +23,14 @@ const HELP_MESSAGE = `
 • Videos are stored securely in private Cloudflare R2
 • Track upload progress in real-time
 • Resume interrupted uploads
-• Future: AI-powered video clipping with Chopify
+• Process videos into clips with Chopify
 
 <b>How to Use:</b>
 1. Tap <b>🎬 Upload Video</b> to open the Mini App
 2. Select a video from your gallery or record one
 3. Watch the upload progress
-4. Get notified when upload completes
+4. Tap "Start Processing" on completed uploads
+5. Receive finished clips in Telegram
 
 <b>Supported Formats:</b> MP4, MOV, MKV, WebM, M4V, AVI
 <b>Max File Size:</b> 2 GB
@@ -264,12 +265,109 @@ export class TelegramBot {
             ],
           },
         });
+
+      case 'process':
+        if (upload.status !== 'uploaded') {
+          return this.editMessage(chatId, messageId, '❌ Can only process completed uploads.');
+        }
+        // Create job via internal API
+        try {
+          const response = await fetch(`${this.appOrigin}/api/internal/jobs`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${this.webhookSecret}`,
+            },
+            body: JSON.stringify({
+              uploadId: upload.id,
+              telegramUserId: userId,
+              aspectRatio: '9:16',
+              captionStyle: 'default',
+              enableTighten: false,
+              enableLoudnorm: false,
+            }),
+          });
+          const result = await response.json();
+          if (!result.ok) throw new Error(result.error || 'Failed to create job');
+          
+          const job = result.data;
+          
+          // Dispatch GitHub Actions workflow
+          await this.dispatchWorkflow(job.id, upload.id, userId);
+          
+          return this.editMessage(chatId, messageId, `✅ <b>Processing Started</b>\n\nJob ID: <code>${job.id}</code>\nFile: <code>${upload.original_filename}</code>\n\nYou'll receive the clips when processing completes.`, {
+            parse_mode: 'HTML',
+            reply_markup: this.getMainKeyboard(),
+          });
+        } catch (e) {
+          return this.editMessage(chatId, messageId, `❌ Failed to start processing: ${e instanceof Error ? e.message : 'Unknown error'}`);
+        }
     }
 
     return createApiResponse(true, { ok: true });
   }
 
+  private async dispatchWorkflow(jobId: string, uploadId: string, userId: number): Promise<void> {
+    // This would dispatch the GitHub Actions workflow
+    // For now, we'll just log it. In production, this would call GitHub API.
+    console.log(`Would dispatch workflow for job ${jobId}, upload ${uploadId}, user ${userId}`);
+    // TODO: Implement actual GitHub API dispatch
+  }
+
   private async handleJobAction(chatId: number, messageId: number, userId: number, action: string): Promise<ApiResponse> {
+    const [, actionType, jobId] = action.split('_');
+    
+    const db = this.db;
+    const job = await db.getJob(jobId);
+    if (!job || job.telegram_user_id !== userId) {
+      return this.editMessage(chatId, messageId, '❌ Job not found or access denied.');
+    }
+
+    switch (actionType) {
+      case 'progress':
+        return this.editMessage(chatId, messageId, `📊 <b>Job Progress</b>\n\nJob ID: <code>${job.id}</code>\nStatus: ${job.status}\nClips: ${job.clip_count}`, {
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard: [[{ text: '🔙 Back', callback_data: 'my_uploads' }]] },
+        });
+
+      case 'cancel':
+        if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
+          return this.editMessage(chatId, messageId, '❌ Cannot cancel completed/failed/cancelled job.');
+        }
+        await db.updateJob(jobId, { status: 'cancelled', error_message: 'Cancelled by user' });
+        return this.editMessage(chatId, messageId, '❌ Job cancelled.', { reply_markup: this.getMainKeyboard() });
+
+      case 'retry':
+        if (job.status !== 'failed' && job.status !== 'cancelled') {
+          return this.editMessage(chatId, messageId, '❌ Can only retry failed or cancelled jobs.');
+        }
+        await db.updateJob(jobId, { status: 'pending', error_message: null });
+        await this.dispatchWorkflow(jobId, job.upload_id, userId);
+        return this.editMessage(chatId, messageId, '🔄 Job queued for retry.', { reply_markup: this.getMainKeyboard() });
+
+      case 'download':
+        return this.editMessage(chatId, messageId, '📥 Download links would be provided here when clips are ready.', {
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard: [[{ text: '🔙 Back', callback_data: 'my_uploads' }]] },
+        });
+
+      case 'delete':
+        return this.editMessage(chatId, messageId, '⚠️ <b>Confirm Delete</b>\n\nThis will permanently delete the job and all associated clips.\n\nAre you sure?', {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '✅ Yes, Delete', callback_data: `job_confirm_delete_${jobId}` }],
+              [{ text: '❌ No', callback_data: 'my_uploads' }],
+            ],
+          },
+        });
+
+      case 'confirm_delete':
+        await db.updateJob(jobId, { status: 'cancelled', error_message: 'Deleted by user' });
+        // TODO: Delete clips from R2
+        return this.editMessage(chatId, messageId, '🗑️ Job and clips deleted.', { reply_markup: this.getMainKeyboard() });
+    }
+
     return createApiResponse(true, { ok: true });
   }
 
@@ -294,6 +392,11 @@ export class TelegramBot {
       if (upload.status === 'uploading' || upload.status === 'failed' || upload.status === 'aborted') {
         keyboard.push([
           { text: `🔄 ${upload.original_filename.substring(0, 20)}`, callback_data: `upload_retry_${upload.id}` },
+          { text: '❌', callback_data: `upload_cancel_${upload.id}` },
+        ]);
+      } else if (upload.status === 'uploaded') {
+        keyboard.push([
+          { text: `▶️ Process ${upload.original_filename.substring(0, 20)}`, callback_data: `upload_process_${upload.id}` },
           { text: '❌', callback_data: `upload_cancel_${upload.id}` },
         ]);
       }

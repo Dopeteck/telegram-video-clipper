@@ -28,5 +28,12 @@ MAX_CONCURRENT_UPLOADS_PER_USER="2"
 RATE_LIMIT_WINDOW_SECONDS="60"
 RATE_LIMIT_MAX_REQUESTS="30"
 
+# Worker Secret (for GitHub Actions internal API)
+WORKER_SECRET="generate_with_openssl_rand_hex_32"
+
+# GitHub Configuration (for workflow dispatch)
+GITHUB_TOKEN="your_github_personal_access_token_with_repo_scope"
+GITHUB_REPO="Dopeteck/telegram-video-clipper"
+
 # D1 Database (automatically bound via wrangler.toml)
 # DB binding is configured in wrangler.toml
