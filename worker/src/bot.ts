@@ -1,4 +1,4 @@
-import { Env, TelegramWebhookUpdate, TelegramMessage, TelegramUser, TelegramReplyKeyboardMarkup, TelegramKeyboardButton, TelegramWebAppInfo, ApiResponse, TelegramCallbackQuery, TelegramInlineQuery } from './types';
+import { Env, TelegramWebhookUpdate, TelegramMessage, TelegramUser, TelegramReplyKeyboardMarkup, TelegramKeyboardButton, TelegramWebAppInfo, ApiResponse, TelegramCallbackQuery, TelegramInlineQuery, TelegramInlineKeyboardButton, TelegramInlineKeyboardMarkup } from './types';
 import { validateTelegramInitData, createApiResponse, sanitizeFilename, validateMimeType, validateFileExtension, getExtensionFromMimeType } from './utils';
 import { Database } from './db';
 import { R2Uploader } from './r2';
@@ -58,12 +58,14 @@ export class TelegramBot {
   private webhookSecret: string;
   private appOrigin: string;
   private maxUploadBytes: number;
+  private chunkSize: number;
 
   constructor(env: Env) {
     this.botToken = env.TELEGRAM_BOT_TOKEN;
     this.webhookSecret = env.TELEGRAM_WEBHOOK_SECRET;
     this.appOrigin = env.APP_ORIGIN;
     this.maxUploadBytes = parseInt(env.MAX_UPLOAD_BYTES || '2147483648', 10);
+    this.chunkSize = parseInt(env.CHUNK_SIZE || '5242880', 10);
     this.db = new Database(env.DB, env);
     this.r2 = new R2Uploader(env);
   }
@@ -195,6 +197,7 @@ export class TelegramBot {
 
     const uploadId = `upload_${Date.now()}_${userId}`;
     const objectKey = `uploads/${userId}/${uploadId}/${sanitizeFilename(fileName)}`;
+    const totalParts = Math.ceil(fileSize / this.chunkSize);
 
     await this.db.createUpload({
       id: uploadId,
@@ -207,11 +210,11 @@ export class TelegramBot {
       status: 'uploading',
     });
 
-    const initResponse = await this.r2.initiateMultipartUpload(objectKey, mimeType);
+    const initResponse = await this.r2.initiateMultipartUpload(objectKey, mimeType, totalParts);
     await this.db.updateUpload(uploadId, { multipart_upload_id: initResponse.uploadId });
 
     const keyboard = this.getMainKeyboard();
-    const uploadButtonKeyboard = {
+    const uploadButtonKeyboard: TelegramInlineKeyboardMarkup = {
       inline_keyboard: [
         [{ text: '🚀 Start Upload', web_app: { url: `${this.appOrigin}/miniapp/upload?upload_id=${uploadId}` } }],
         [{ text: '❌ Cancel', callback_data: `upload_cancel_${uploadId}` }],
@@ -244,7 +247,8 @@ export class TelegramBot {
         if (upload.status !== 'failed' && upload.status !== 'aborted') {
           return this.editMessage(chatId, messageId, '❌ Can only retry failed or cancelled uploads.');
         }
-        const initResponse = await this.r2.initiateMultipartUpload(upload.object_key, upload.mime_type);
+        const totalParts = Math.ceil(upload.file_size / this.chunkSize);
+        const initResponse = await this.r2.initiateMultipartUpload(upload.object_key, upload.mime_type, totalParts);
         await this.db.updateUpload(uploadId, { 
           status: 'uploading', 
           multipart_upload_id: initResponse.uploadId,
