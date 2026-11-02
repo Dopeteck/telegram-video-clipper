@@ -4,7 +4,7 @@ compatibility_date = "2024-01-15"
 compatibility_flags = ["nodejs_compat"]
 
 [vars]
-APP_ORIGIN = "https://telegram-video-clipper.example.com"
+APP_ORIGIN = "https://telegram-video-clipper-worker.0eda14452e21855ab602d6c1058d19c3.workers.dev"
 MAX_UPLOAD_BYTES = "2147483648"
 CHUNK_SIZE = "5242880"
 MAX_CONCURRENT_CHUNKS = "3"
@@ -18,7 +18,7 @@ R2_BUCKET_NAME = "telegram-video-clipper-uploads"
 [[d1_databases]]
 binding = "DB"
 database_name = "telegram-video-clipper"
-database_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+database_id = "a16d2cd2-b642-49a3-b583-d4e897b22508"
 
 [[r2_buckets]]
 binding = "R2_BUCKET"
