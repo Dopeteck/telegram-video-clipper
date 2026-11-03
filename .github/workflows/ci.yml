@@ -93,6 +93,8 @@ jobs:
       - name: Build miniapp
         working-directory: ./miniapp
         run: npm run build
+        env:
+          VITE_API_BASE_URL: https://telegram-video-clipper-worker-production.adegunwa3.workers.dev
 
   deploy-worker:
     needs: [test-python, test-worker, test-miniapp]
@@ -120,7 +122,7 @@ jobs:
         run: npm run build
 
       - name: Deploy Worker to Cloudflare
-        uses: cloudflare/wrangler-action@v3
+        uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -153,11 +155,10 @@ jobs:
         run: npm run build
         env:
           VITE_API_BASE_URL: https://telegram-video-clipper-worker-production.adegunwa3.workers.dev
+
       - name: Deploy Mini App to Cloudflare Pages
-        uses: cloudflare/pages-action@v1
+        uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          projectName: telegram-video-clipper-miniapp
-          directory: ./miniapp/dist
-          branch: main
+          command: pages deploy ./miniapp/dist --project-name=telegram-video-clipper-miniapp --branch=main
