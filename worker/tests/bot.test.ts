@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { TelegramBot } from '../src/bot';
+import { TelegramBot, parseUploadAction } from '../src/bot';
 import { TelegramMessage, TelegramUser, TelegramChat, TelegramCallbackQuery, TelegramWebhookUpdate } from '../src/types';
 
 // Mock fetch
@@ -49,6 +49,23 @@ vi.mock('../src/db', () => ({
 vi.mock('../src/r2', () => ({
   R2Uploader: vi.fn().mockImplementation(() => mockR2),
 }));
+
+describe('parseUploadAction', () => {
+  it.each([
+    ['upload_process_upload_1793706123456_12345', 'process', 'upload_1793706123456_12345'],
+    ['upload_retry_upload_1793706123456_12345', 'retry', 'upload_1793706123456_12345'],
+    ['upload_cancel_upload_1793706123456_12345', 'cancel', 'upload_1793706123456_12345'],
+  ])('preserves the full upload ID for %s', (callbackData, actionType, uploadId) => {
+    expect(parseUploadAction(callbackData)).toEqual({ actionType, uploadId });
+  });
+
+  it.each(['upload_video', 'upload_process_', 'my_uploads', 'upload_delete_upload_123'])(
+    'rejects malformed or unsupported upload callback data: %s',
+    (callbackData) => {
+      expect(parseUploadAction(callbackData)).toBeNull();
+    }
+  );
+});
 
 describe('TelegramBot', () => {
   let bot: TelegramBot;
