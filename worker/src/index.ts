@@ -45,8 +45,8 @@ app.use('*', cors({
   credentials: true,
 }));
 
-app.route('/api', api);
 app.route('/api/internal', internalApi);
+app.route('/api', api);
 
 app.post('/telegram/webhook', async (c) => {
   const secretToken = c.req.header('X-Telegram-Bot-Api-Secret-Token');
