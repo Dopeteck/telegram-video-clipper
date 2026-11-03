@@ -7,6 +7,21 @@ const store = vi.hoisted(() => ({
   jobs: new Map<string, any>(),
 }));
 
+const r2Signing = vi.hoisted(() => ({
+  download: vi.fn(async (key: string, expiresIn: number) =>
+    'https://r2.test/get?key=' + encodeURIComponent(key) + '&expires=' + expiresIn
+  ),
+  upload: vi.fn(async (key: string, contentType: string, expiresIn: number) =>
+    'https://r2.test/put?key=' + encodeURIComponent(key) + '&type=' + encodeURIComponent(contentType) + '&expires=' + expiresIn
+  ),
+}));
+
+vi.mock('../src/r2', () => ({
+  R2Uploader: class {
+    generateDownloadUrl = r2Signing.download;
+    generateUploadUrl = r2Signing.upload;
+  },
+}));
 vi.mock('../src/db', () => {
   class Database {
     constructor(_db?: unknown, _env?: unknown) {}
@@ -88,6 +103,8 @@ let fetchMock: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   store.uploads.clear();
   store.jobs.clear();
+  r2Signing.download.mockClear();
+  r2Signing.upload.mockClear();
   fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 204, text: async () => '' });
   (globalThis as any).fetch = fetchMock;
   vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -296,6 +313,48 @@ describe('internal routes stay protected and keep working for the workflow', () 
     expect((await internal('/api/internal/jobs/x', 'GET', undefined, '', baseEnv({ WORKER_SECRET: '' }))).status).toBe(401);
   });
 
+  it('issues a short-lived source download URL only for a processing job with an uploaded source', async () => {
+    seedUpload('upload_1', ALICE);
+    const created = await (await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_1' })).json() as any;
+    const jobId = created.data.id;
+
+    await internal('/api/internal/jobs/' + jobId + '/complete', 'POST', { clips: [], status: 'processing' });
+    const res = await internal('/api/internal/jobs/' + jobId + '/source-url');
+    expect(res.status).toBe(200);
+
+    const data = (await res.json() as any).data;
+    expect(data.url).toContain('https://r2.test/get');
+    expect(data.filename).toBe('clip.mp4');
+    expect(data.expiresAt).toBeGreaterThan(Date.now());
+    expect(r2Signing.download).toHaveBeenCalledWith('uploads/' + ALICE + '/upload_1/clip.mp4', 900);
+  });
+
+  it('creates scoped output upload URLs only for safe MP4 filenames on processing jobs', async () => {
+    seedUpload('upload_1', ALICE);
+    const created = await (await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_1' })).json() as any;
+    const jobId = created.data.id;
+
+    const tooEarly = await internal('/api/internal/jobs/' + jobId + '/output-urls', 'POST', { filenames: ['clip-1.mp4'] });
+    expect(tooEarly.status).toBe(409);
+
+    await internal('/api/internal/jobs/' + jobId + '/complete', 'POST', { clips: [], status: 'processing' });
+    const res = await internal('/api/internal/jobs/' + jobId + '/output-urls', 'POST', {
+      filenames: ['clip-1.mp4', 'clip-2.mp4'],
+    });
+    expect(res.status).toBe(200);
+
+    const uploads = (await res.json() as any).data.uploads;
+    expect(uploads).toHaveLength(2);
+    expect(uploads[0].key).toBe('jobs/' + jobId + '/clip-1.mp4');
+    expect(uploads[1].key).toBe('jobs/' + jobId + '/clip-2.mp4');
+    expect(uploads[0].url).toContain('https://r2.test/put');
+    expect(r2Signing.upload).toHaveBeenCalledWith('jobs/' + jobId + '/clip-1.mp4', 'video/mp4', 3600);
+
+    const unsafe = await internal('/api/internal/jobs/' + jobId + '/output-urls', 'POST', {
+      filenames: ['../../other-user.mp4'],
+    });
+    expect(unsafe.status).toBe(400);
+  });
   it('lets the workflow read a job with the worker secret', async () => {
     seedUpload('upload_1', ALICE);
     const created = await (await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_1' })).json() as any;
