@@ -342,6 +342,67 @@ api.post('/user/profile', async (c) => {
   return c.json(createApiResponse(true, profile));
 });
 
+api.post('/jobs', async (c) => {
+  const user = c.get('telegramUser');
+  const body = await c.req.json();
+
+  const { uploadId, aspectRatio, captionStyle, enableTighten, enableLoudnorm } = body;
+  if (!uploadId) {
+    return c.json(createApiResponse(false, undefined, 'Missing required fields'), 400);
+  }
+
+  const db = new Database(c.env.DB, c.env);
+
+  // Verify the upload exists and belongs to the authenticated user
+  const upload = await db.getUpload(uploadId);
+  if (!upload) {
+    return c.json(createApiResponse(false, undefined, 'Upload not found'), 404);
+  }
+
+  if (upload.telegram_user_id !== user.id) {
+    return c.json(createApiResponse(false, undefined, 'Upload not found'), 404);
+  }
+
+  try {
+    const job = await createProcessingJob(
+      c.env,
+      db,
+      uploadId,
+      user.id,
+      aspectRatio || '9:16',
+      captionStyle || 'default',
+      enableTighten ? true : false,
+      enableLoudnorm ? true : false
+    );
+    return c.json(createApiResponse(true, job));
+  } catch (error) {
+    if (error instanceof Error && error.message === 'Upload not found') {
+      return c.json(createApiResponse(false, undefined, 'Upload not found'), 404);
+    }
+    console.error('Job creation failed:', error);
+    return c.json(createApiResponse(false, undefined, error instanceof Error ? error.message : 'Failed to create job'), 500);
+  }
+});
+
+api.get('/jobs/:jobId', async (c) => {
+  const user = c.get('telegramUser');
+  const jobId = c.req.param('jobId');
+
+  const db = new Database(c.env.DB, c.env);
+  const job = await db.getJob(jobId);
+
+  if (!job) {
+    return c.json(createApiResponse(false, undefined, 'Job not found'), 404);
+  }
+
+  // Verify ownership: job's telegram_user_id must match the authenticated user
+  if (job.telegram_user_id !== user.id) {
+    return c.json(createApiResponse(false, undefined, 'Job not found'), 404);
+  }
+
+  return c.json(createApiResponse(true, job));
+});
+
 api.get('/health', (c) => {
   return c.json(createApiResponse(true, { status: 'ok', timestamp: Date.now() }));
 });

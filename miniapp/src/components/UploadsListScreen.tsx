@@ -51,10 +51,10 @@ const UploadsListScreen: React.FC<Props> = ({ apiBaseUrl, initData, onNavigate }
         ...options.headers,
       },
     });
-    
+
     const contentType = response.headers.get('content-type');
     let data: any;
-    
+
     if (contentType && contentType.includes('application/json')) {
       data = await response.json();
     } else {
@@ -62,7 +62,7 @@ const UploadsListScreen: React.FC<Props> = ({ apiBaseUrl, initData, onNavigate }
       console.error('Non-JSON response:', response.status, text);
       throw new Error(`Server error (${response.status}): ${text || 'Unknown error'}`);
     }
-    
+
     if (!response.ok) {
       throw new Error(data.error || `Request failed with status ${response.status}`);
     }
@@ -83,8 +83,8 @@ const UploadsListScreen: React.FC<Props> = ({ apiBaseUrl, initData, onNavigate }
 
   const loadJobStatus = useCallback(async (jobId: string) => {
     try {
-      const data = await apiRequest(`/api/internal/jobs/${jobId}`);
-      setJobStatus(prev => ({ ...prev, [jobId]: data }));
+      const data = await apiRequest(`/api/jobs/${jobId}`);
+      setJobStatus(prev => ({ ...prev, [data.upload_id]: data }));
       return data;
     } catch (e) {
       console.error('Failed to load job status:', e);
@@ -93,7 +93,7 @@ const UploadsListScreen: React.FC<Props> = ({ apiBaseUrl, initData, onNavigate }
 
   const startPollingJob = useCallback((jobId: string) => {
     if (pollingIntervals[jobId]) return;
-    
+
     const interval = setInterval(() => {
       loadJobStatus(jobId).then(job => {
         if (job && (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled')) {
@@ -106,7 +106,7 @@ const UploadsListScreen: React.FC<Props> = ({ apiBaseUrl, initData, onNavigate }
         }
       });
     }, 5000);
-    
+
     setPollingIntervals(prev => ({ ...prev, [jobId]: interval }));
   }, [loadJobStatus, pollingIntervals]);
 
@@ -120,21 +120,20 @@ const UploadsListScreen: React.FC<Props> = ({ apiBaseUrl, initData, onNavigate }
   const handleProcess = async (uploadId: string) => {
     setProcessingUploadId(uploadId);
     try {
-      const job = await apiRequest('/api/internal/jobs', {
+      const job = await apiRequest('/api/jobs', {
         method: 'POST',
         body: JSON.stringify({
           uploadId,
-          telegramUserId: parseInt(initData.split('user=')[1]?.split('&')[0] || '0'),
           aspectRatio: '9:16',
           captionStyle: 'default',
           enableTighten: false,
           enableLoudnorm: false,
         }),
       });
-      
+
       loadJobStatus(job.id);
       startPollingJob(job.id);
-      
+
       alert(`✅ Processing started!\nJob ID: ${job.id}\n\nYou'll receive clips when processing completes.`);
     } catch (e) {
       alert(`❌ Failed to start processing: ${e instanceof Error ? e.message : 'Unknown error'}`);
@@ -226,7 +225,7 @@ const UploadsListScreen: React.FC<Props> = ({ apiBaseUrl, initData, onNavigate }
       {uploads.map(upload => {
         const job = jobStatus[upload.id];
         const isProcessing = processingUploadId === upload.id;
-        
+
         return (
           <div key={upload.id} className="card" style={{ marginBottom: 12, padding: 12 }}>
             <div className="upload-item">
@@ -239,20 +238,20 @@ const UploadsListScreen: React.FC<Props> = ({ apiBaseUrl, initData, onNavigate }
               </div>
               <span className={getStatusClass(upload.status)}>{getStatusLabel(upload.status)}</span>
             </div>
-            
+
             {(upload.status === 'failed' || upload.status === 'aborted' || upload.status === 'expired') && (
-              <button 
-                className="btn btn-secondary" 
+              <button
+                className="btn btn-secondary"
                 onClick={() => handleRetry(upload.id)}
                 style={{ marginTop: 12, width: '100%' }}
               >
                 🔄 Retry Upload
               </button>
             )}
-            
+
             {upload.status === 'uploaded' && (
-              <button 
-                className="btn btn-primary" 
+              <button
+                className="btn btn-primary"
                 onClick={() => handleProcess(upload.id)}
                 disabled={isProcessing}
                 style={{ marginTop: 12, width: '100%' }}
@@ -260,7 +259,7 @@ const UploadsListScreen: React.FC<Props> = ({ apiBaseUrl, initData, onNavigate }
                 {isProcessing ? '⏳ Starting...' : '▶️ Process Video'}
               </button>
             )}
-            
+
             {job && (
               <div style={{ marginTop: 12, padding: 12, background: 'var(--bg-secondary)', borderRadius: 'var(--radius-sm)' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
@@ -288,7 +287,7 @@ const UploadsListScreen: React.FC<Props> = ({ apiBaseUrl, initData, onNavigate }
                 )}
               </div>
             )}
-            
+
             {upload.error_message && (
               <div className="error" style={{ marginTop: 8, fontSize: 12 }}>
                 {upload.error_message}
