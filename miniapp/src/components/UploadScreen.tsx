@@ -131,13 +131,15 @@ const UploadScreen: React.FC<Props> = ({ apiBaseUrl, initData, uploadId: initial
         }),
       });
 
-      setUploadId(data.uploadId);
+      // Pass the server-issued ID directly; React state updates are asynchronous.
+      const activeUploadId = data.uploadId as string;
+      setUploadId(activeUploadId);
       uploadStateRef.current.totalParts = data.totalParts;
       uploadStateRef.current.chunkSize = data.chunkSize;
       uploadStateRef.current.file = file;
       uploadStateRef.current.uploadedParts = new Set();
       
-      await uploadParts(data.partUrls);
+      await uploadParts(data.partUrls, activeUploadId);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to initiate upload');
       setUploading(false);
@@ -172,7 +174,7 @@ const UploadScreen: React.FC<Props> = ({ apiBaseUrl, initData, uploadId: initial
       }
 
       if (missingParts.length === 0) {
-        await completeUpload();
+        await completeUpload(uploadId);
         return;
       }
 
@@ -182,14 +184,14 @@ const UploadScreen: React.FC<Props> = ({ apiBaseUrl, initData, uploadId: initial
       });
 
       uploadStateRef.current.file = null; // Will prompt user to reselect file
-      await uploadParts(partUrls);
+      await uploadParts(partUrls, uploadId);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to resume upload');
       setUploading(false);
     }
   };
 
-  const uploadParts = async (partUrls: PartUrl[]) => {
+  const uploadParts = async (partUrls: PartUrl[], activeUploadId: string) => {
     const state = uploadStateRef.current;
     state.completing = false;
     
@@ -239,7 +241,7 @@ const UploadScreen: React.FC<Props> = ({ apiBaseUrl, initData, uploadId: initial
       // Persist ETag immediately
       await apiRequest('/api/upload/part-complete', {
         method: 'POST',
-        body: JSON.stringify({ uploadId, partNumber: partUrl.partNumber, etag, size: blob.size }),
+        body: JSON.stringify({ uploadId: activeUploadId, partNumber: partUrl.partNumber, etag, size: blob.size }),
       });
 
       return { partNumber: partUrl.partNumber, etag, size: blob.size };
@@ -274,7 +276,7 @@ const UploadScreen: React.FC<Props> = ({ apiBaseUrl, initData, uploadId: initial
     }
 
     // All parts uploaded successfully, now complete
-    await completeUpload();
+    await completeUpload(activeUploadId);
   };
 
   const promptForFile = (): Promise<File | null> => {
@@ -303,17 +305,17 @@ const UploadScreen: React.FC<Props> = ({ apiBaseUrl, initData, uploadId: initial
     } : null);
   };
 
-  const completeUpload = async () => {
+  const completeUpload = async (activeUploadId: string) => {
     const state = uploadStateRef.current;
     if (state.completing) return;
     state.completing = true;
     
-    if (!uploadId) return;
+    if (!activeUploadId) return;
     
     try {
       await apiRequest('/api/upload/complete', {
         method: 'POST',
-        body: JSON.stringify({ uploadId }),
+        body: JSON.stringify({ uploadId: activeUploadId }),
       });
 
       setCompleted(true);
