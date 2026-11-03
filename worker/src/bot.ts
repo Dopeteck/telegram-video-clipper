@@ -38,6 +38,19 @@ const HELP_MESSAGE = `
 For support, contact the bot administrator.
 `;
 
+export function parseUploadAction(action: string): { actionType: 'cancel' | 'retry' | 'process'; uploadId: string } | null {
+  const match = action.match(/^upload_(cancel|retry|process)_(.+)$/);
+  if (!match) return null;
+
+  const [, actionType, uploadId] = match;
+  if (!uploadId) return null;
+
+  return {
+    actionType: actionType as 'cancel' | 'retry' | 'process',
+    uploadId,
+  };
+}
+
 const SETTINGS_MESSAGE = `
 ⚙️ <b>Settings</b>
 
@@ -233,8 +246,12 @@ export class TelegramBot {
   }
 
   private async handleUploadAction(chatId: number, messageId: number, userId: number, action: string): Promise<ApiResponse> {
-    const [, , actionType, uploadId] = action.split('_');
-    
+    const parsedAction = parseUploadAction(action);
+    if (!parsedAction) {
+      return this.editMessage(chatId, messageId, '❌ Invalid upload action.');
+    }
+    const { actionType, uploadId } = parsedAction;
+
     const upload = await this.db.getUpload(uploadId);
     if (!upload || upload.telegram_user_id !== userId) {
       return this.editMessage(chatId, messageId, '❌ Upload not found or access denied.');
