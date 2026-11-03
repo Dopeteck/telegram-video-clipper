@@ -92,6 +92,7 @@ print(f'video_path={local_path}')
           python -c "
 import os
 import requests
+import json
 
 job_id = os.environ['JOB_ID']
 worker_url = os.environ['WORKER_URL']
@@ -101,9 +102,9 @@ headers = {'Authorization': f'Bearer {worker_secret}'}
 response = requests.get(f'{worker_url}/api/internal/jobs/{job_id}', headers=headers)
 job = response.json()['data']
 
-print(f'Job: {job}')
+print(f'Job: {json.dumps(job)}')
 print(f'aspect_ratio={job.get(\"aspect_ratio\", \"9:16\")}')
-print(f'caption_style={job.get(\"caption_style\", \"default\")}')
+print(f'style={job.get(\"style\", \"default\")}')
 print(f'enable_tighten={job.get(\"enable_tighten\", 0)}')
 print(f'enable_loudnorm={job.get(\"enable_loudnorm\", 0)}')
           " >> $GITHUB_OUTPUT
@@ -115,6 +116,7 @@ print(f'enable_loudnorm={job.get(\"enable_loudnorm\", 0)}')
           python -c "
 import os
 import requests
+import json
 
 job_id = os.environ['JOB_ID']
 worker_url = os.environ['WORKER_URL']
@@ -134,7 +136,7 @@ print(f'Report started: {response.status_code}')
         env:
           VIDEO_PATH: ${{ steps.download.outputs.video_path }}
           ASPECT_RATIO: ${{ steps.prefs.outputs.aspect_ratio }}
-          CAPTION_STYLE: ${{ steps.prefs.outputs.caption_style }}
+          STYLE: ${{ steps.prefs.outputs.style }}
           ENABLE_TIGHTEN: ${{ steps.prefs.outputs.enable_tighten }}
           ENABLE_LOUDNORM: ${{ steps.prefs.outputs.enable_loudnorm }}
           JOB_ID: ${{ github.event.client_payload.job_id }}
@@ -146,7 +148,7 @@ import json
 
 video_path = os.environ['VIDEO_PATH']
 aspect_ratio = os.environ['ASPECT_RATIO']
-caption_style = os.environ['CAPTION_STYLE']
+style = os.environ['STYLE']
 enable_tighten = os.environ['ENABLE_TIGHTEN'] == '1'
 enable_loudnorm = os.environ['ENABLE_LOUDNORM'] == '1'
 job_id = os.environ['JOB_ID']
@@ -159,14 +161,13 @@ os.makedirs(out_dir, exist_ok=True)
 cmd = [
     'python', 'chopify.py', video_path,
     '--aspect', aspect_ratio,
+    '--style', style,
     '--workdir', work_dir,
     '--out', out_dir,
-    '--action', 'render',
+    '--action', 'all',
     '--no-preflight'
 ]
 
-if caption_style != 'default':
-    cmd.extend(['--caption-style', caption_style])
 if enable_tighten:
     cmd.append('--tighten')
 if enable_loudnorm:
@@ -186,22 +187,22 @@ for f in os.listdir(out_dir):
     if f.endswith('.mp4'):
         clips.append(os.path.join(out_dir, f))
 
-print(f'clips={clips}')
-print(f'clips={clips}')
+print(f'clips={json.dumps(clips)}')
           " >> $GITHUB_OUTPUT
 
       - name: Upload clips to R2
         id: upload
         env:
           JOB_ID: ${{ github.event.client_payload.job_id }}
-          CLIPS: ${{ steps.chopify.outputs.clips }}
+          CLIPS_JSON: ${{ steps.chopify.outputs.clips }}
         run: |
           python -c "
 import os
 import boto3
+import json
 from botocore.config import Config
 
-clips = eval(os.environ['CLIPS'])
+clips = json.loads(os.environ['CLIPS_JSON'])
 job_id = os.environ['JOB_ID']
 
 s3 = boto3.client(
@@ -220,25 +221,26 @@ for clip in clips:
     uploaded.append(key)
     print(f'Uploaded {clip} to {key}')
 
-print(f'uploaded={uploaded}')
+print(f'uploaded={json.dumps(uploaded)}')
           " >> $GITHUB_OUTPUT
 
       - name: Report completion to Worker
         if: always()
         env:
           JOB_ID: ${{ github.event.client_payload.job_id }}
-          CLIPS: ${{ steps.upload.outputs.uploaded }}
+          CLIPS_JSON: ${{ steps.upload.outputs.uploaded }}
           CHOPIFY_SUCCESS: ${{ steps.chopify.conclusion == 'success' }}
         run: |
           python -c "
 import os
 import requests
+import json
 
 job_id = os.environ['JOB_ID']
 worker_url = os.environ['WORKER_URL']
 worker_secret = os.environ['WORKER_SECRET']
 
-clips = eval(os.environ['CLIPS']) if os.environ['CLIPS'] else []
+clips = json.loads(os.environ['CLIPS_JSON']) if os.environ['CLIPS_JSON'] else []
 success = os.environ['CHOPIFY_SUCCESS'] == 'True'
 
 headers = {'Authorization': f'Bearer {worker_secret}', 'Content-Type': 'application/json'}

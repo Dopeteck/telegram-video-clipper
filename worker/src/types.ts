@@ -5,7 +5,8 @@ export interface Env {
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
   SESSION_SECRET: string;
-  APP_ORIGIN: string;
+  WORKER_URL: string;
+  MINIAPP_URL: string;
   MAX_UPLOAD_BYTES: string;
   CHUNK_SIZE: string;
   MAX_CONCURRENT_CHUNKS: string;

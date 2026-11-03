@@ -58,7 +58,8 @@ export class TelegramBot {
   private botToken: string;
   private webhookSecret: string;
   private workerSecret: string;
-  private appOrigin: string;
+  private workerUrl: string;
+  private miniappUrl: string;
   private maxUploadBytes: number;
   private chunkSize: number;
 
@@ -66,7 +67,8 @@ export class TelegramBot {
     this.botToken = env.TELEGRAM_BOT_TOKEN;
     this.webhookSecret = env.TELEGRAM_WEBHOOK_SECRET;
     this.workerSecret = env.WORKER_SECRET;
-    this.appOrigin = env.APP_ORIGIN;
+    this.workerUrl = env.WORKER_URL;
+    this.miniappUrl = env.MINIAPP_URL;
     this.maxUploadBytes = parseInt(env.MAX_UPLOAD_BYTES || '2147483648', 10);
     this.chunkSize = parseInt(env.CHUNK_SIZE || '5242880', 10);
     this.db = new Database(env.DB, env);
@@ -219,7 +221,7 @@ export class TelegramBot {
     const keyboard = this.getMainKeyboard();
     const uploadButtonKeyboard: TelegramInlineKeyboardMarkup = {
       inline_keyboard: [
-        [{ text: '🚀 Start Upload', web_app: { url: `${this.appOrigin}/miniapp/upload?upload_id=${uploadId}` } }],
+        [{ text: '🚀 Start Upload', web_app: { url: `${this.miniappUrl}/miniapp/upload?upload_id=${uploadId}` } }],
         [{ text: '❌ Cancel', callback_data: `upload_cancel_${uploadId}` }],
       ],
     };
@@ -262,7 +264,7 @@ export class TelegramBot {
           parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
-              [{ text: '🚀 Resume Upload', web_app: { url: `${this.appOrigin}/miniapp/upload?upload_id=${uploadId}` } }],
+              [{ text: '🚀 Resume Upload', web_app: { url: `${this.miniappUrl}/miniapp/upload?upload_id=${uploadId}` } }],
               [{ text: '❌ Cancel', callback_data: `upload_cancel_${uploadId}` }],
             ],
           },
@@ -274,7 +276,7 @@ export class TelegramBot {
         }
         // Create job via internal API
         try {
-          const response = await fetch(`${this.appOrigin}/api/internal/jobs`, {
+          const response = await fetch(`${this.workerUrl}/api/internal/jobs`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -336,7 +338,7 @@ export class TelegramBot {
         await db.updateJob(jobId, { status: 'pending', error_message: null });
         // Dispatch via internal API
         try {
-          const response = await fetch(`${this.appOrigin}/api/internal/jobs`, {
+          const response = await fetch(`${this.workerUrl}/api/internal/jobs`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -469,7 +471,7 @@ export class TelegramBot {
   private getMainKeyboard(): TelegramReplyKeyboardMarkup {
     return {
       keyboard: [
-        [{ text: '🎬 Upload Video', web_app: { url: `${this.appOrigin}/miniapp/upload` } }],
+        [{ text: '🎬 Upload Video', web_app: { url: `${this.miniappUrl}/miniapp/upload` } }],
         [{ text: '📂 My Uploads' }],
         [{ text: '⚙️ Settings' }],
         [{ text: '❓ Help' }],
@@ -554,7 +556,7 @@ export class TelegramBot {
         menu_button: {
           type: 'web_app',
           text: '🎬 Upload Video',
-          web_app: { url: `${this.appOrigin}/miniapp/upload` },
+          web_app: { url: `${this.miniappUrl}/miniapp/upload` },
         },
       }),
     });

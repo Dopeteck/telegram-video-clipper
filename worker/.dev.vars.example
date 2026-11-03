@@ -17,8 +17,9 @@ R2_ACCESS_KEY_ID="your_r2_access_key_id"
 R2_SECRET_ACCESS_KEY="your_r2_secret_access_key"
 R2_PUBLIC_URL="https://pub-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.r2.dev"
 
-# Application Configuration
-APP_ORIGIN="https://your-worker.your-subdomain.workers.dev"
+# Application Configuration (separate URLs)
+WORKER_URL="https://telegram-video-clipper-worker.0eda14452e21855ab602d6c1058d19c3.workers.dev"
+MINIAPP_URL="https://telegram-video-clipper-miniapp.pages.dev"
 MAX_UPLOAD_BYTES="2147483648"
 CHUNK_SIZE="5242880"
 MAX_CONCURRENT_CHUNKS="3"
