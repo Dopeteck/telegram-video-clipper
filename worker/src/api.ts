@@ -483,11 +483,11 @@ internalApi.post('/jobs', async (c) => {
 });
 
 async function dispatchWorkflow(env: Env, jobId: string, uploadId: string, telegramUserId: number): Promise<string | null> {
-  const githubToken = env.GITHUB_TOKEN;
+  const githubToken = env.GH_TOKEN;
   const githubRepo = env.GITHUB_REPO || 'Dopeteck/telegram-video-clipper';
   
   if (!githubToken) {
-    console.warn('GITHUB_TOKEN not configured, skipping workflow dispatch');
+    console.warn('GH_TOKEN not configured, skipping workflow dispatch');
     return null;
   }
 
@@ -514,18 +514,27 @@ async function dispatchWorkflow(env: Env, jobId: string, uploadId: string, teleg
 
   if (!response.ok) {
     const error = await response.text();
+    // Mark job as failed with dispatch error
+    await db.updateJob(jobId, { 
+      status: 'failed', 
+      error_message: `GitHub dispatch failed: ${response.status} ${error}` 
+    });
     throw new Error(`GitHub dispatch failed: ${response.status} ${error}`);
   }
 
-  // Get the workflow run URL from the response
-  const data = await response.json() as { html_url?: string; id?: number };
-  const runUrl = data.html_url || `https://github.com/${githubRepo}/actions/runs/${data.id}`;
+  // GitHub returns 204 No Content on successful dispatch - no JSON body
+  // We cannot get the run URL from the dispatch response (it's async)
+  // Construct the expected actions URL for the repository
+  const runUrl = `https://github.com/${githubRepo}/actions`;
   
-  // Update the job with the GitHub Actions run URL
-  await db.updateJob(jobId, { github_run_url: runUrl });
+  // Mark job as queued (dispatched successfully, workflow will start async)
+  await db.updateJob(jobId, { 
+    status: 'queued',
+    github_run_url: `https://github.com/${githubRepo}/actions` 
+  });
   
-  console.log(`Dispatched process-video workflow for job ${jobId}, run URL: ${runUrl}`);
-  return runUrl;
+  console.log(`Dispatched process-video workflow for job ${jobId}`);
+  return `https://github.com/${githubRepo}/actions`;
 }
 
 export { api, internalApi };
