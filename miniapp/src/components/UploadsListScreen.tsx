@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { Job, apiRequest as jobsApiRequest, startProcessing, fetchJob, fetchJobs, latestJobByUpload, isTerminalStatus } from '../lib/jobs';
 
 interface Upload {
   id: string;
@@ -8,23 +9,6 @@ interface Upload {
   status: string;
   created_at: number;
   error_message: string | null;
-}
-
-interface Job {
-  id: string;
-  upload_id: string;
-  telegram_user_id: number;
-  status: string;
-  aspect_ratio: string;
-  caption_style: string;
-  enable_tighten: number;
-  enable_loudnorm: number;
-  clip_count: number;
-  error_message: string | null;
-  created_at: number;
-  updated_at: number;
-  completed_at: number | null;
-  github_run_url?: string;
 }
 
 type Screen = 'upload' | 'uploads' | 'settings' | 'help';
@@ -39,35 +23,15 @@ const UploadsListScreen: React.FC<Props> = ({ apiBaseUrl, initData, onNavigate }
   const [uploads, setUploads] = useState<Upload[]>([]);
   const [loading, setLoading] = useState(true);
   const [processingUploadId, setProcessingUploadId] = useState<string | null>(null);
-  const [jobStatus, setJobStatus] = useState<Record<string, Job>>({});
-  const [pollingIntervals, setPollingIntervals] = useState<Record<string, ReturnType<typeof setInterval>>>({});
+  // Jobs are keyed by UPLOAD id because the list renders per upload.
+  const [jobsByUpload, setJobsByUpload] = useState<Record<string, Job>>({});
+  const [startErrors, setStartErrors] = useState<Record<string, string>>({});
+  const pollTimers = useRef<Record<string, ReturnType<typeof setInterval>>>({});
 
-  const apiRequest = useCallback(async (endpoint: string, options: RequestInit = {}) => {
-    const response = await fetch(`${apiBaseUrl}${endpoint}`, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${initData}`,
-        ...options.headers,
-      },
-    });
-    
-    const contentType = response.headers.get('content-type');
-    let data: any;
-    
-    if (contentType && contentType.includes('application/json')) {
-      data = await response.json();
-    } else {
-      const text = await response.text();
-      console.error('Non-JSON response:', response.status, text);
-      throw new Error(`Server error (${response.status}): ${text || 'Unknown error'}`);
-    }
-    
-    if (!response.ok) {
-      throw new Error(data.error || `Request failed with status ${response.status}`);
-    }
-    return data.data;
-  }, [apiBaseUrl, initData]);
+  const apiRequest = useCallback(
+    (endpoint: string, options: RequestInit = {}) => jobsApiRequest(apiBaseUrl, initData, endpoint, options),
+    [apiBaseUrl, initData]
+  );
 
   const loadUploads = useCallback(async () => {
     try {
@@ -81,63 +45,71 @@ const UploadsListScreen: React.FC<Props> = ({ apiBaseUrl, initData, onNavigate }
     }
   }, [apiRequest]);
 
-  const loadJobStatus = useCallback(async (jobId: string) => {
-    try {
-      const data = await apiRequest(`/api/internal/jobs/${jobId}`);
-      setJobStatus(prev => ({ ...prev, [jobId]: data }));
-      return data;
-    } catch (e) {
-      console.error('Failed to load job status:', e);
+  const stopPolling = useCallback((jobId: string) => {
+    const timer = pollTimers.current[jobId];
+    if (timer) {
+      clearInterval(timer);
+      delete pollTimers.current[jobId];
     }
-  }, [apiRequest]);
+  }, []);
+
+  const trackJob = useCallback((job: Job) => {
+    setJobsByUpload(prev => ({ ...prev, [job.upload_id]: job }));
+    if (isTerminalStatus(job.status)) stopPolling(job.id);
+  }, [stopPolling]);
 
   const startPollingJob = useCallback((jobId: string) => {
-    if (pollingIntervals[jobId]) return;
-    
-    const interval = setInterval(() => {
-      loadJobStatus(jobId).then(job => {
-        if (job && (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled')) {
-          clearInterval(pollingIntervals[jobId]);
-          setPollingIntervals(prev => {
-            const next = { ...prev };
-            delete next[jobId];
-            return next;
-          });
-        }
-      });
+    if (pollTimers.current[jobId]) return;
+    pollTimers.current[jobId] = setInterval(async () => {
+      try {
+        trackJob(await fetchJob(apiBaseUrl, initData, jobId));
+      } catch (e) {
+        // Transient errors: keep polling. A 404 means the job is gone, so stop.
+        if (e instanceof Error && e.message === 'Job not found') stopPolling(jobId);
+        console.error('Failed to load job status:', e);
+      }
     }, 5000);
-    
-    setPollingIntervals(prev => ({ ...prev, [jobId]: interval }));
-  }, [loadJobStatus, pollingIntervals]);
+  }, [apiBaseUrl, initData, trackJob, stopPolling]);
 
+  // Initial load: uploads, plus the caller's existing jobs so status survives a reload.
   useEffect(() => {
     loadUploads();
+    fetchJobs(apiBaseUrl, initData)
+      .then(jobs => {
+        const latest = latestJobByUpload(jobs);
+        setJobsByUpload(latest);
+        Object.values(latest).forEach(job => {
+          if (!isTerminalStatus(job.status)) startPollingJob(job.id);
+        });
+      })
+      .catch(e => console.error('Failed to load jobs:', e));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Stop all polling when the screen unmounts.
+  useEffect(() => {
+    const timers = pollTimers.current;
     return () => {
-      Object.values(pollingIntervals).forEach(clearInterval);
+      Object.values(timers).forEach(clearInterval);
     };
-  }, [loadUploads, pollingIntervals]);
+  }, []);
 
   const handleProcess = async (uploadId: string) => {
     setProcessingUploadId(uploadId);
+    setStartErrors(prev => {
+      const next = { ...prev };
+      delete next[uploadId];
+      return next;
+    });
     try {
-      const job = await apiRequest('/api/internal/jobs', {
-        method: 'POST',
-        body: JSON.stringify({
-          uploadId,
-          telegramUserId: parseInt(initData.split('user=')[1]?.split('&')[0] || '0'),
-          aspectRatio: '9:16',
-          captionStyle: 'default',
-          enableTighten: false,
-          enableLoudnorm: false,
-        }),
-      });
-      
-      loadJobStatus(job.id);
-      startPollingJob(job.id);
-      
-      alert(`✅ Processing started!\nJob ID: ${job.id}\n\nYou'll receive clips when processing completes.`);
+      const job = await startProcessing(apiBaseUrl, initData, uploadId);
+      trackJob(job);
+      if (!isTerminalStatus(job.status)) startPollingJob(job.id);
     } catch (e) {
-      alert(`❌ Failed to start processing: ${e instanceof Error ? e.message : 'Unknown error'}`);
+      setStartErrors(prev => ({
+        ...prev,
+        [uploadId]: e instanceof Error ? e.message : 'Failed to start processing',
+      }));
     } finally {
       setProcessingUploadId(null);
     }
@@ -224,9 +196,11 @@ const UploadsListScreen: React.FC<Props> = ({ apiBaseUrl, initData, onNavigate }
     <div>
       <h2 className="card-title" style={{ marginBottom: 16 }}>My Uploads</h2>
       {uploads.map(upload => {
-        const job = jobStatus[upload.id];
+        const job = jobsByUpload[upload.id];
+        const startError = startErrors[upload.id];
+        const jobActive = !!job && !isTerminalStatus(job.status);
         const isProcessing = processingUploadId === upload.id;
-        
+
         return (
           <div key={upload.id} className="card" style={{ marginBottom: 12, padding: 12 }}>
             <div className="upload-item">
@@ -239,7 +213,7 @@ const UploadsListScreen: React.FC<Props> = ({ apiBaseUrl, initData, onNavigate }
               </div>
               <span className={getStatusClass(upload.status)}>{getStatusLabel(upload.status)}</span>
             </div>
-            
+
             {(upload.status === 'failed' || upload.status === 'aborted' || upload.status === 'expired') && (
               <button 
                 className="btn btn-secondary" 
@@ -249,18 +223,24 @@ const UploadsListScreen: React.FC<Props> = ({ apiBaseUrl, initData, onNavigate }
                 🔄 Retry Upload
               </button>
             )}
-            
+
             {upload.status === 'uploaded' && (
               <button 
                 className="btn btn-primary" 
                 onClick={() => handleProcess(upload.id)}
-                disabled={isProcessing}
+                disabled={isProcessing || jobActive}
                 style={{ marginTop: 12, width: '100%' }}
               >
-                {isProcessing ? '⏳ Starting...' : '▶️ Process Video'}
+                {isProcessing ? '⏳ Starting...' : job?.status === 'failed' ? '🔄 Retry Processing' : '▶️ Process Video'}
               </button>
             )}
-            
+
+            {startError && (
+              <div className="error" style={{ marginTop: 8, fontSize: 12 }}>
+                ❌ {startError}
+              </div>
+            )}
+
             {job && (
               <div style={{ marginTop: 12, padding: 12, background: 'var(--bg-secondary)', borderRadius: 'var(--radius-sm)' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
@@ -283,12 +263,12 @@ const UploadsListScreen: React.FC<Props> = ({ apiBaseUrl, initData, onNavigate }
                 )}
                 {job.status === 'completed' && (
                   <div style={{ fontSize: 12, color: 'var(--success)', marginTop: 8 }}>
-                    ✅ Processing complete! Clips ready for delivery.
+                    ✅ Processing complete — {job.clip_count} clip{job.clip_count === 1 ? '' : 's'} generated.
                   </div>
                 )}
               </div>
             )}
-            
+
             {upload.error_message && (
               <div className="error" style={{ marginTop: 8, fontSize: 12 }}>
                 {upload.error_message}

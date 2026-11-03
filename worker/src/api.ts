@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { Env, ApiResponse, PresignedUrlResponse, InitiateMultipartResponse, CompleteMultipartRequest, UploadStatusResponse, UserUploadsResponse, TelegramUser, TelegramChat, Job } from './types';
-import { validateTelegramInitData, createApiResponse, generateId, sanitizeFilename, validateMimeType, validateFileExtension, getExtensionFromMimeType } from './utils';
+import { validateTelegramInitData, createApiResponse, generateId, sanitizeFilename, validateMimeType, validateFileExtension, getExtensionFromMimeType, safeEqual } from './utils';
 import { Database } from './db';
 import { R2Uploader } from './r2';
 
@@ -33,7 +33,7 @@ api.post('/upload/initiate', async (c) => {
   const user = c.get('telegramUser');
   const chat = c.get('telegramChat');
   const body = await c.req.json();
-  
+
   const { filename, fileSize, mimeType } = body;
   if (!filename || !fileSize || !mimeType) {
     return c.json(createApiResponse(false, undefined, 'Missing required fields'), 400);
@@ -67,7 +67,7 @@ api.post('/upload/initiate', async (c) => {
 
   try {
     console.log(`[${requestId}] db_create_upload: uploadId=${uploadId}, userId=${user.id}, fileSize=${fileSize}`);
-    
+
     const upload = await db.createUpload({
       id: uploadId,
       telegram_user_id: user.id,
@@ -80,9 +80,9 @@ api.post('/upload/initiate', async (c) => {
     });
 
     console.log(`[${requestId}] r2_create_multipart: uploadId=${uploadId}, key=${objectKey}, totalParts=${totalParts}`);
-    
+
     const initResponse = await r2.initiateMultipartUpload(objectKey, mimeType, totalParts);
-    
+
     console.log(`[${requestId}] r2_presign_parts: uploadId=${initResponse.uploadId}, parts=${initResponse.partUrls.length}`);
 
     await db.updateUpload(uploadId, { multipart_upload_id: initResponse.uploadId });
@@ -99,18 +99,17 @@ api.post('/upload/initiate', async (c) => {
     }));
   } catch (error) {
     console.error(`[${requestId}] Upload initiate failed:`, error);
-    
-    // Try to clean up D1 record if it was created
+
     try {
-      await db.updateUpload(uploadId, { 
-        status: 'failed', 
-        error_message: error instanceof Error ? error.message : 'Unknown error' 
+      await db.updateUpload(uploadId, {
+        status: 'failed',
+        error_message: error instanceof Error ? error.message : 'Unknown error',
       });
     } catch (e) {
       console.error(`[${requestId}] Failed to mark upload as failed:`, e);
     }
-    
-    return c.json(createApiResponse(false, undefined, 
+
+    return c.json(createApiResponse(false, undefined,
       error instanceof Error ? error.message : 'Failed to initiate upload'), 500);
   }
 });
@@ -119,7 +118,7 @@ api.post('/upload/part-urls', async (c) => {
   const requestId = crypto.randomUUID();
   const user = c.get('telegramUser');
   const body = await c.req.json();
-  
+
   const { uploadId, partNumbers } = body;
   if (!uploadId || !Array.isArray(partNumbers) || partNumbers.length === 0) {
     return c.json(createApiResponse(false, undefined, 'Missing required fields'), 400);
@@ -127,7 +126,7 @@ api.post('/upload/part-urls', async (c) => {
 
   const db = new Database(c.env.DB, c.env);
   const upload = await db.getUpload(uploadId);
-  
+
   if (!upload || upload.telegram_user_id !== user.id) {
     return c.json(createApiResponse(false, undefined, 'Upload not found'), 404);
   }
@@ -138,7 +137,7 @@ api.post('/upload/part-urls', async (c) => {
 
   try {
     console.log(`[${requestId}] r2_presign_parts: uploadId=${uploadId}, parts=${partNumbers.join(',')}`);
-    
+
     const r2 = new R2Uploader(c.env);
     const partUrls = await r2.generatePartUploadUrls(upload.object_key, upload.multipart_upload_id, partNumbers);
 
@@ -147,7 +146,7 @@ api.post('/upload/part-urls', async (c) => {
     return c.json(createApiResponse(true, { partUrls }));
   } catch (error) {
     console.error(`[${requestId}] Part URLs generation failed:`, error);
-    return c.json(createApiResponse(false, undefined, 
+    return c.json(createApiResponse(false, undefined,
       error instanceof Error ? error.message : 'Failed to generate part URLs'), 500);
   }
 });
@@ -155,7 +154,7 @@ api.post('/upload/part-urls', async (c) => {
 api.post('/upload/part-complete', async (c) => {
   const user = c.get('telegramUser');
   const body = await c.req.json();
-  
+
   const { uploadId, partNumber, etag, size } = body;
   if (!uploadId || !partNumber || !etag) {
     return c.json(createApiResponse(false, undefined, 'Missing required fields'), 400);
@@ -163,7 +162,7 @@ api.post('/upload/part-complete', async (c) => {
 
   const db = new Database(c.env.DB, c.env);
   const upload = await db.getUpload(uploadId);
-  
+
   if (!upload || upload.telegram_user_id !== user.id) {
     return c.json(createApiResponse(false, undefined, 'Upload not found'), 404);
   }
@@ -184,7 +183,7 @@ api.post('/upload/part-complete', async (c) => {
 api.post('/upload/complete', async (c) => {
   const user = c.get('telegramUser');
   const body = await c.req.json();
-  
+
   const { uploadId } = body;
   if (!uploadId) {
     return c.json(createApiResponse(false, undefined, 'Missing uploadId'), 400);
@@ -192,7 +191,7 @@ api.post('/upload/complete', async (c) => {
 
   const db = new Database(c.env.DB, c.env);
   const upload = await db.getUpload(uploadId);
-  
+
   if (!upload || upload.telegram_user_id !== user.id) {
     return c.json(createApiResponse(false, undefined, 'Upload not found'), 404);
   }
@@ -210,7 +209,7 @@ api.post('/upload/complete', async (c) => {
 
   const parts = await db.getUploadParts(uploadId);
   const uploadedPartNumbers = parts.filter(p => p.etag).map(p => p.part_number).sort((a, b) => a - b);
-  
+
   if (uploadedPartNumbers.length !== totalParts) {
     return c.json(createApiResponse(false, undefined, `Missing parts: expected ${totalParts}, got ${uploadedPartNumbers.length}`), 400);
   }
@@ -222,7 +221,7 @@ api.post('/upload/complete', async (c) => {
   }
 
   const r2 = new R2Uploader(c.env);
-  
+
   try {
     const result = await r2.completeMultipartUpload({
       uploadId: upload.multipart_upload_id,
@@ -232,9 +231,9 @@ api.post('/upload/complete', async (c) => {
 
     const verified = await r2.verifyObject(upload.object_key, upload.file_size);
     if (!verified.exists || verified.size !== upload.file_size) {
-      await db.updateUpload(uploadId, { 
-        status: 'failed', 
-        error_message: 'Size mismatch after completion' 
+      await db.updateUpload(uploadId, {
+        status: 'failed',
+        error_message: 'Size mismatch after completion',
       });
       return c.json(createApiResponse(false, undefined, 'Upload verification failed'), 500);
     }
@@ -252,9 +251,9 @@ api.post('/upload/complete', async (c) => {
       size: verified.size,
     }));
   } catch (error) {
-    await db.updateUpload(uploadId, { 
-      status: 'failed', 
-      error_message: error instanceof Error ? error.message : 'Completion failed' 
+    await db.updateUpload(uploadId, {
+      status: 'failed',
+      error_message: error instanceof Error ? error.message : 'Completion failed',
     });
     return c.json(createApiResponse(false, undefined, 'Failed to complete upload'), 500);
   }
@@ -263,7 +262,7 @@ api.post('/upload/complete', async (c) => {
 api.post('/upload/abort', async (c) => {
   const user = c.get('telegramUser');
   const body = await c.req.json();
-  
+
   const { uploadId } = body;
   if (!uploadId) {
     return c.json(createApiResponse(false, undefined, 'Missing uploadId'), 400);
@@ -271,7 +270,7 @@ api.post('/upload/abort', async (c) => {
 
   const db = new Database(c.env.DB, c.env);
   const upload = await db.getUpload(uploadId);
-  
+
   if (!upload || upload.telegram_user_id !== user.id) {
     return c.json(createApiResponse(false, undefined, 'Upload not found'), 404);
   }
@@ -290,10 +289,10 @@ api.post('/upload/abort', async (c) => {
 api.get('/upload/status/:uploadId', async (c) => {
   const user = c.get('telegramUser');
   const uploadId = c.req.param('uploadId');
-  
+
   const db = new Database(c.env.DB, c.env);
   const upload = await db.getUpload(uploadId);
-  
+
   if (!upload || upload.telegram_user_id !== user.id) {
     return c.json(createApiResponse(false, undefined, 'Upload not found'), 404);
   }
@@ -319,10 +318,10 @@ api.get('/uploads', async (c) => {
   const user = c.get('telegramUser');
   const limit = parseInt(c.req.query('limit') || '50', 10);
   const offset = parseInt(c.req.query('offset') || '0', 10);
-  
+
   const db = new Database(c.env.DB, c.env);
   const uploads = await db.getUserUploads(user.id, limit, offset);
-  
+
   const response: UserUploadsResponse = { uploads };
   return c.json(createApiResponse(true, response));
 });
@@ -346,7 +345,100 @@ api.get('/health', (c) => {
   return c.json(createApiResponse(true, { status: 'ok', timestamp: Date.now() }));
 });
 
-// Internal API for GitHub Actions (authenticated via worker secret)
+// ---------------------------------------------------------------------------
+// Job endpoints for the Mini App (authenticated with Telegram initData).
+// The Telegram user id is ALWAYS derived from the validated initData; nothing
+// identity-related is accepted from the request body.
+// ---------------------------------------------------------------------------
+const ALLOWED_ASPECT_RATIOS = ['9:16', '16:9', '1:1'];
+const ALLOWED_CAPTION_STYLES = ['default', 'hormozi', 'mrbeast', 'podcast'];
+const ACTIVE_JOB_STATUSES: Job['status'][] = ['pending', 'queued', 'processing'];
+
+api.post('/jobs', async (c) => {
+  const user = c.get('telegramUser');
+
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json(createApiResponse(false, undefined, 'Invalid JSON body', 'BAD_REQUEST'), 400);
+  }
+
+  const uploadId = body.uploadId;
+  if (typeof uploadId !== 'string' || !uploadId) {
+    return c.json(createApiResponse(false, undefined, 'Missing uploadId', 'BAD_REQUEST'), 400);
+  }
+
+  const aspectRatio = body.aspectRatio === undefined ? '9:16' : body.aspectRatio;
+  if (typeof aspectRatio !== 'string' || !ALLOWED_ASPECT_RATIOS.includes(aspectRatio)) {
+    return c.json(createApiResponse(false, undefined, 'Invalid aspectRatio', 'BAD_REQUEST'), 400);
+  }
+
+  const captionStyle = body.captionStyle === undefined ? 'default' : body.captionStyle;
+  if (typeof captionStyle !== 'string' || !ALLOWED_CAPTION_STYLES.includes(captionStyle)) {
+    return c.json(createApiResponse(false, undefined, 'Invalid captionStyle', 'BAD_REQUEST'), 400);
+  }
+
+  const db = new Database(c.env.DB, c.env);
+
+  // Ownership: a user can only process their own uploads. 404 (not 403) so
+  // upload ids of other users are not confirmed to exist.
+  const upload = await db.getUpload(uploadId);
+  if (!upload || upload.telegram_user_id !== user.id) {
+    return c.json(createApiResponse(false, undefined, 'Upload not found', 'UPLOAD_NOT_FOUND'), 404);
+  }
+  if (upload.status !== 'uploaded') {
+    return c.json(createApiResponse(false, undefined, `Upload is not ready for processing (status: ${upload.status})`, 'UPLOAD_NOT_READY'), 409);
+  }
+
+  // Idempotent: a double tap must not dispatch a second workflow.
+  const active = await db.getActiveJobForUpload(uploadId);
+  if (active) {
+    return c.json(createApiResponse(true, active));
+  }
+
+  try {
+    const job = await createProcessingJob(
+      c.env,
+      db,
+      uploadId,
+      user.id,
+      aspectRatio,
+      captionStyle,
+      body.enableTighten === true,
+      body.enableLoudnorm === true
+    );
+    return c.json(createApiResponse(true, job));
+  } catch (error) {
+    if (error instanceof JobError) {
+      return c.json(createApiResponse(false, undefined, error.message, error.code), error.status as 404 | 409);
+    }
+    console.error('Job creation failed:', error);
+    const message = error instanceof Error ? error.message : 'Failed to start processing';
+    return c.json(createApiResponse(false, undefined, `Could not start processing: ${message}`, 'DISPATCH_FAILED'), 502);
+  }
+});
+
+api.get('/jobs', async (c) => {
+  const user = c.get('telegramUser');
+  const limit = Math.min(Math.max(parseInt(c.req.query('limit') || '50', 10) || 50, 1), 100);
+  const db = new Database(c.env.DB, c.env);
+  const jobs = await db.getUserJobs(user.id, limit, 0);
+  return c.json(createApiResponse(true, { jobs }));
+});
+
+api.get('/jobs/:jobId', async (c) => {
+  const user = c.get('telegramUser');
+  const db = new Database(c.env.DB, c.env);
+  const job = await db.getJob(c.req.param('jobId'));
+  if (!job || job.telegram_user_id !== user.id) {
+    return c.json(createApiResponse(false, undefined, 'Job not found', 'JOB_NOT_FOUND'), 404);
+  }
+  return c.json(createApiResponse(true, job));
+});
+
+// Internal API for GitHub Actions (authenticated via worker secret ONLY).
+// The Mini App must never call these routes; it uses /api/jobs instead.
 const internalApi = new Hono<{ Bindings: Env }>();
 
 internalApi.use('*', async (c, next) => {
@@ -356,7 +448,7 @@ internalApi.use('*', async (c, next) => {
   }
 
   const token = authHeader.substring(7);
-  if (token !== c.env.WORKER_SECRET) {
+  if (!c.env.WORKER_SECRET || !safeEqual(token, c.env.WORKER_SECRET)) {
     return c.json(createApiResponse(false, undefined, 'Invalid worker secret'), 401);
   }
 
@@ -367,7 +459,7 @@ internalApi.get('/jobs/:jobId', async (c) => {
   const jobId = c.req.param('jobId');
   const db = new Database(c.env.DB, c.env);
   const job = await db.getJob(jobId);
-  
+
   if (!job) {
     return c.json(createApiResponse(false, undefined, 'Job not found'), 404);
   }
@@ -375,38 +467,59 @@ internalApi.get('/jobs/:jobId', async (c) => {
   return c.json(createApiResponse(true, job));
 });
 
+const REPORTABLE_STATUSES = ['processing', 'completed', 'failed'] as const;
+const TERMINAL_STATUSES = ['completed', 'failed'];
+
 internalApi.post('/jobs/:jobId/complete', async (c) => {
   const jobId = c.req.param('jobId');
   const body = await c.req.json();
-  
-  const { clips, status, error_message } = body;
+
+  const { clips, status, error_message, github_run_url } = body;
   if (!clips || !Array.isArray(clips) || !status) {
     return c.json(createApiResponse(false, undefined, 'Missing required fields'), 400);
+  }
+  if (!(REPORTABLE_STATUSES as readonly string[]).includes(status)) {
+    return c.json(createApiResponse(false, undefined, `Invalid status: ${status}`), 400);
   }
 
   const db = new Database(c.env.DB, c.env);
   const job = await db.getJob(jobId);
-  
+
   if (!job) {
     return c.json(createApiResponse(false, undefined, 'Job not found'), 404);
   }
 
-  const updates: Partial<Job> = {
-    status: status as Job['status'],
-    clip_count: clips.length,
-    completed_at: Date.now(),
-  };
-  
+  const updates: Partial<Job> = { status: status as Job['status'] };
+
+  // Only a terminal report finishes the job and fixes the clip count.
+  if (TERMINAL_STATUSES.includes(status)) {
+    updates.clip_count = clips.length;
+    updates.completed_at = Date.now();
+  }
+
   if (error_message) {
-    updates.error_message = error_message;
+    updates.error_message = String(error_message).slice(0, 1000);
+  }
+
+  if (typeof github_run_url === 'string' && github_run_url.startsWith('https://github.com/')) {
+    updates.github_run_url = github_run_url;
   }
 
   const updatedJob = await db.updateJob(jobId, updates);
-  
+
   return c.json(createApiResponse(true, updatedJob));
 });
 
-// Shared function for job creation - can be called directly by internal API or bot
+export class JobError extends Error {
+  constructor(message: string, public status: number, public code: string) {
+    super(message);
+    this.name = 'JobError';
+  }
+}
+
+// Shared function for job creation - called by the public Mini App route,
+// the internal route and the bot. Ownership is enforced here so that no
+// caller can create a job for an upload the given Telegram user does not own.
 export async function createProcessingJob(
   env: Env,
   db: Database,
@@ -418,14 +531,17 @@ export async function createProcessingJob(
   enableLoudnorm: boolean
 ): Promise<Job> {
   const upload = await db.getUpload(uploadId);
-  
-  if (!upload) {
-    throw new Error('Upload not found');
+
+  if (!upload || upload.telegram_user_id !== telegramUserId) {
+    throw new JobError('Upload not found', 404, 'UPLOAD_NOT_FOUND');
+  }
+  if (upload.status !== 'uploaded') {
+    throw new JobError(`Upload is not ready for processing (status: ${upload.status})`, 409, 'UPLOAD_NOT_READY');
   }
 
   const jobId = `job_${Date.now()}_${telegramUserId}`;
-  
-  const job = await db.createJob({
+
+  await db.createJob({
     id: jobId,
     upload_id: uploadId,
     telegram_user_id: telegramUserId,
@@ -440,10 +556,22 @@ export async function createProcessingJob(
     github_run_url: null,
   });
 
-  // Dispatch GitHub Actions workflow - let errors propagate
-  await dispatchWorkflow(env, jobId, uploadId, telegramUserId);
-  
-  // Fetch and return the updated job with queued status and GitHub URL
+  try {
+    await dispatchWorkflow(env, jobId, uploadId, telegramUserId);
+  } catch (error) {
+    // Never leave a job stuck in 'pending'/'queued' when dispatch failed.
+    const message = error instanceof Error ? error.message : 'Dispatch failed';
+    try {
+      const current = await db.getJob(jobId);
+      if (current && ACTIVE_JOB_STATUSES.includes(current.status)) {
+        await db.updateJob(jobId, { status: 'failed', error_message: message.slice(0, 1000) });
+      }
+    } catch (e) {
+      console.error(`Failed to mark job ${jobId} as failed:`, e);
+    }
+    throw error;
+  }
+
   const updatedJob = await db.getJob(jobId);
   if (!updatedJob) {
     throw new Error('Failed to retrieve updated job after dispatch');
@@ -453,14 +581,14 @@ export async function createProcessingJob(
 
 internalApi.post('/jobs', async (c) => {
   const body = await c.req.json();
-  
+
   const { uploadId, telegramUserId, aspectRatio, captionStyle, enableTighten, enableLoudnorm } = body;
   if (!uploadId || !telegramUserId) {
     return c.json(createApiResponse(false, undefined, 'Missing required fields'), 400);
   }
 
   const db = new Database(c.env.DB, c.env);
-  
+
   try {
     const job = await createProcessingJob(
       c.env,
@@ -474,66 +602,83 @@ internalApi.post('/jobs', async (c) => {
     );
     return c.json(createApiResponse(true, job));
   } catch (error) {
-    if (error instanceof Error && error.message === 'Upload not found') {
-      return c.json(createApiResponse(false, undefined, 'Upload not found'), 404);
+    if (error instanceof JobError) {
+      return c.json(createApiResponse(false, undefined, error.message, error.code), error.status as 404 | 409);
     }
     console.error('Job creation failed:', error);
     return c.json(createApiResponse(false, undefined, error instanceof Error ? error.message : 'Failed to create job'), 500);
   }
 });
 
+function describeDispatchFailure(status: number, body: string): string {
+  const detail = body.replace(/\s+/g, ' ').trim().slice(0, 300);
+  let hint = '';
+  if (status === 401) hint = ' (GitHub rejected the token: expired, revoked or invalid)';
+  else if (status === 403) hint = ' (token lacks permission to dispatch events, or the request was blocked)';
+  else if (status === 404) hint = ' (repository not found, or the token has no access to it)';
+  else if (status === 422) hint = ' (GitHub rejected the dispatch payload)';
+  return `GitHub dispatch failed: ${status} ${detail}${hint}`;
+}
+
 async function dispatchWorkflow(env: Env, jobId: string, uploadId: string, telegramUserId: number): Promise<string> {
   const githubToken = env.GITHUB_TOKEN;
   const githubRepo = env.GITHUB_REPO || 'Dopeteck/telegram-video-clipper';
-  
+
   if (!githubToken) {
     throw new Error('GITHUB_TOKEN secret not configured in Worker environment');
   }
 
   const db = new Database(env.DB, env);
   const upload = await db.getUpload(uploadId);
-  
-  const response = await fetch(`https://api.github.com/repos/${githubRepo}/dispatches`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${githubToken}`,
-      'Accept': 'application/vnd.github.v3+json',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      event_type: 'process-video',
-      client_payload: {
-        job_id: jobId,
-        upload_id: uploadId,
-        telegram_user_id: telegramUserId,
-        object_key: upload?.object_key || `uploads/${telegramUserId}/${uploadId}/`,
-      },
-    }),
-  });
 
-  if (!response.ok) {
-    const error = await response.text();
-    // Mark job as failed with dispatch error
-    await db.updateJob(jobId, { 
-      status: 'failed', 
-      error_message: `GitHub dispatch failed: ${response.status} ${error}` 
-    });
-    throw new Error(`GitHub dispatch failed: ${response.status} ${error}`);
+  if (!upload) {
+    const message = `Upload ${uploadId} not found while dispatching job`;
+    await db.updateJob(jobId, { status: 'failed', error_message: message });
+    throw new Error(message);
   }
 
-  // GitHub returns 204 No Content on successful dispatch - no JSON body
-  // We cannot get the run URL from the dispatch response (it's async)
-  // Construct the expected actions URL for the repository
+  let response: Response;
+  try {
+    response = await fetch(`https://api.github.com/repos/${githubRepo}/dispatches`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${githubToken}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'Content-Type': 'application/json',
+        // GitHub rejects API requests without a User-Agent.
+        'User-Agent': 'telegram-video-clipper-worker',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      body: JSON.stringify({
+        event_type: 'process-video',
+        client_payload: {
+          job_id: jobId,
+          upload_id: uploadId,
+          telegram_user_id: telegramUserId,
+          object_key: upload.object_key,
+        },
+      }),
+    });
+  } catch (error) {
+    const message = `GitHub dispatch request failed: ${error instanceof Error ? error.message : 'network error'}`;
+    await db.updateJob(jobId, { status: 'failed', error_message: message });
+    throw error instanceof Error ? error : new Error(message);
+  }
+
+  if (!response.ok) {
+    const message = describeDispatchFailure(response.status, await response.text());
+    await db.updateJob(jobId, { status: 'failed', error_message: message });
+    throw new Error(message);
+  }
+
+  // GitHub returns 204 No Content: the run id is not available yet. The
+  // workflow reports its real run URL when it starts.
   const runUrl = `https://github.com/${githubRepo}/actions`;
-  
-  // Mark job as queued (dispatched successfully, workflow will start async)
-  await db.updateJob(jobId, { 
-    status: 'queued',
-    github_run_url: `https://github.com/${githubRepo}/actions` 
-  });
-  
+
+  await db.updateJob(jobId, { status: 'queued', github_run_url: runUrl });
+
   console.log(`Dispatched process-video workflow for job ${jobId}`);
-  return `https://github.com/${githubRepo}/actions`;
+  return runUrl;
 }
 
 export { api, internalApi, dispatchWorkflow };

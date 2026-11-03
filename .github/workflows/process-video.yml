@@ -27,6 +27,11 @@ env:
   WORKER_SECRET: ${{ secrets.WORKER_SECRET }}
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+# NOTE on step outputs: every `python` step below writes its step outputs
+# explicitly to the file named by $GITHUB_OUTPUT as `key=value` lines. Printing
+# to stdout is for logs only. (Piping stdout into $GITHUB_OUTPUT makes the runner
+# reject any log line that is not `key=value` with "Invalid format".)
+
 jobs:
   process:
     runs-on: ubuntu-latest
@@ -34,6 +39,18 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Check dispatch payload
+        env:
+          JOB_ID: ${{ github.event.client_payload.job_id }}
+          UPLOAD_ID: ${{ github.event.client_payload.upload_id }}
+          OBJECT_KEY: ${{ github.event.client_payload.object_key }}
+        run: |
+          echo "event=${{ github.event_name }} job_id=${JOB_ID} upload_id=${UPLOAD_ID}"
+          if [ -z "$JOB_ID" ] || [ -z "$UPLOAD_ID" ] || [ -z "$OBJECT_KEY" ]; then
+            echo "::error::Missing job_id/upload_id/object_key in client_payload. This workflow must be triggered by the Worker's repository_dispatch (event_type process-video)."
+            exit 1
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -52,84 +69,84 @@ jobs:
           pip install -r requirements.txt -r requirements-dev.txt
           pip install boto3 requests
 
+      - name: Report job started
+        env:
+          JOB_ID: ${{ github.event.client_payload.job_id }}
+        run: |
+          python - <<'PY'
+          import os
+          import requests
+
+          job_id = os.environ['JOB_ID']
+          worker_url = os.environ['WORKER_URL']
+          run_url = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+
+          response = requests.post(
+              f'{worker_url}/api/internal/jobs/{job_id}/complete',
+              headers={'Authorization': f"Bearer {os.environ['WORKER_SECRET']}", 'Content-Type': 'application/json'},
+              json={'clips': [], 'status': 'processing', 'github_run_url': run_url},
+              timeout=30,
+          )
+          print(f'Report started: {response.status_code} {response.text}')
+          response.raise_for_status()
+          PY
+
       - name: Download video from R2
         id: download
         env:
-          JOB_ID: ${{ github.event.client_payload.job_id }}
-          UPLOAD_ID: ${{ github.event.client_payload.upload_id }}
           OBJECT_KEY: ${{ github.event.client_payload.object_key }}
         run: |
-          python -c "
-import os
-import boto3
-from botocore.config import Config
+          python - <<'PY'
+          import os
+          import boto3
+          from botocore.config import Config
 
-job_id = os.environ['JOB_ID']
-upload_id = os.environ['UPLOAD_ID']
-object_key = os.environ['OBJECT_KEY']
+          object_key = os.environ['OBJECT_KEY']
 
-s3 = boto3.client(
-    's3',
-    endpoint_url=f'https://{os.environ[\"R2_ACCOUNT_ID\"]}.r2.cloudflarestorage.com',
-    aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
-    aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
-    config=Config(signature_version='s3v4'),
-    region_name='auto'
-)
+          s3 = boto3.client(
+              's3',
+              endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+              aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
+              aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
+              config=Config(signature_version='s3v4'),
+              region_name='auto',
+          )
 
-local_path = f'/tmp/{os.path.basename(object_key)}'
-print(f'Downloading {object_key} to {local_path}')
-s3.download_file(os.environ['R2_BUCKET'], object_key, local_path)
-print(f'Downloaded {os.path.getsize(local_path)} bytes')
-print(f'video_path={local_path}')
-          " >> $GITHUB_OUTPUT
+          local_path = f'/tmp/{os.path.basename(object_key)}'
+          print(f'Downloading {object_key} to {local_path}')
+          s3.download_file(os.environ['R2_BUCKET'], object_key, local_path)
+          print(f'Downloaded {os.path.getsize(local_path)} bytes')
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f'video_path={local_path}\n')
+          PY
 
       - name: Get job preferences
         id: prefs
         env:
           JOB_ID: ${{ github.event.client_payload.job_id }}
         run: |
-          python -c "
-import os
-import requests
-import json
+          python - <<'PY'
+          import os
+          import json
+          import requests
 
-job_id = os.environ['JOB_ID']
-worker_url = os.environ['WORKER_URL']
-worker_secret = os.environ['WORKER_SECRET']
+          job_id = os.environ['JOB_ID']
+          response = requests.get(
+              f"{os.environ['WORKER_URL']}/api/internal/jobs/{job_id}",
+              headers={'Authorization': f"Bearer {os.environ['WORKER_SECRET']}"},
+              timeout=30,
+          )
+          response.raise_for_status()
+          job = response.json()['data']
+          print(f'Job: {json.dumps(job)}')
 
-headers = {'Authorization': f'Bearer {worker_secret}'}
-response = requests.get(f'{worker_url}/api/internal/jobs/{job_id}', headers=headers)
-job = response.json()['data']
-
-print(f'Job: {json.dumps(job)}')
-print(f'aspect_ratio={job.get(\"aspect_ratio\", \"9:16\")}')
-print(f'style={job.get(\"style\", \"default\")}')
-print(f'enable_tighten={job.get(\"enable_tighten\", 0)}')
-print(f'enable_loudnorm={job.get(\"enable_loudnorm\", 0)}')
-          " >> $GITHUB_OUTPUT
-
-      - name: Report job started
-        env:
-          JOB_ID: ${{ github.event.client_payload.job_id }}
-        run: |
-          python -c "
-import os
-import requests
-import json
-
-job_id = os.environ['JOB_ID']
-worker_url = os.environ['WORKER_URL']
-worker_secret = os.environ['WORKER_SECRET']
-
-headers = {'Authorization': f'Bearer {worker_secret}', 'Content-Type': 'application/json'}
-response = requests.post(
-    f'{worker_url}/api/internal/jobs/{job_id}/complete',
-    headers=headers,
-    json={'clips': [], 'status': 'processing'}
-)
-print(f'Report started: {response.status_code}')
-          "
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f"aspect_ratio={job.get('aspect_ratio') or '9:16'}\n")
+              out.write(f"style={job.get('caption_style') or 'default'}\n")
+              out.write(f"enable_tighten={job.get('enable_tighten') or 0}\n")
+              out.write(f"enable_loudnorm={job.get('enable_loudnorm') or 0}\n")
+          PY
 
       - name: Run Chopify processing
         id: chopify
@@ -141,54 +158,53 @@ print(f'Report started: {response.status_code}')
           ENABLE_LOUDNORM: ${{ steps.prefs.outputs.enable_loudnorm }}
           JOB_ID: ${{ github.event.client_payload.job_id }}
         run: |
-          python -c "
-import os
-import subprocess
-import json
+          python - <<'PY'
+          import os
+          import subprocess
+          import sys
+          import json
 
-video_path = os.environ['VIDEO_PATH']
-aspect_ratio = os.environ['ASPECT_RATIO']
-style = os.environ['STYLE']
-enable_tighten = os.environ['ENABLE_TIGHTEN'] == '1'
-enable_loudnorm = os.environ['ENABLE_LOUDNORM'] == '1'
-job_id = os.environ['JOB_ID']
+          video_path = os.environ['VIDEO_PATH']
+          aspect_ratio = os.environ['ASPECT_RATIO']
+          style = os.environ['STYLE']
+          enable_tighten = os.environ['ENABLE_TIGHTEN'] == '1'
+          enable_loudnorm = os.environ['ENABLE_LOUDNORM'] == '1'
+          job_id = os.environ['JOB_ID']
 
-work_dir = f'/tmp/chopify_work_{job_id}'
-os.makedirs(work_dir, exist_ok=True)
-out_dir = f'{work_dir}/clips'
-os.makedirs(out_dir, exist_ok=True)
+          work_dir = f'/tmp/chopify_work_{job_id}'
+          os.makedirs(work_dir, exist_ok=True)
+          out_dir = f'{work_dir}/clips'
+          os.makedirs(out_dir, exist_ok=True)
 
-cmd = [
-    'python', 'chopify.py', video_path,
-    '--aspect', aspect_ratio,
-    '--style', style,
-    '--workdir', work_dir,
-    '--out', out_dir,
-    '--action', 'all',
-    '--no-preflight'
-]
+          cmd = [
+              'python', 'chopify.py', video_path,
+              '--aspect', aspect_ratio,
+              '--style', style,
+              '--workdir', work_dir,
+              '--out', out_dir,
+              '--action', 'all',
+              '--no-preflight',
+          ]
+          if enable_tighten:
+              cmd.append('--tighten')
+          if enable_loudnorm:
+              cmd.append('--loudnorm')
 
-if enable_tighten:
-    cmd.append('--tighten')
-if enable_loudnorm:
-    cmd.append('--loudnorm')
+          print('Running: ' + ' '.join(cmd))
+          result = subprocess.run(cmd, capture_output=True, text=True, cwd='.')
+          print(f'stdout: {result.stdout}')
+          print(f'stderr: {result.stderr}')
+          print(f'returncode: {result.returncode}')
 
-print(f'Running: {\" \".join(cmd)}')
-result = subprocess.run(cmd, capture_output=True, text=True, cwd='.')
-print(f'stdout: {result.stdout}')
-print(f'stderr: {result.stderr}')
-print(f'returncode: {result.returncode}')
+          if result.returncode != 0:
+              sys.exit(1)
 
-if result.returncode != 0:
-    exit(1)
+          clips = [os.path.join(out_dir, f) for f in sorted(os.listdir(out_dir)) if f.endswith('.mp4')]
+          print(f'Found {len(clips)} clip(s)')
 
-clips = []
-for f in os.listdir(out_dir):
-    if f.endswith('.mp4'):
-        clips.append(os.path.join(out_dir, f))
-
-print(f'clips={json.dumps(clips)}')
-          " >> $GITHUB_OUTPUT
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f'clips={json.dumps(clips)}\n')
+          PY
 
       - name: Upload clips to R2
         id: upload
@@ -196,58 +212,69 @@ print(f'clips={json.dumps(clips)}')
           JOB_ID: ${{ github.event.client_payload.job_id }}
           CLIPS_JSON: ${{ steps.chopify.outputs.clips }}
         run: |
-          python -c "
-import os
-import boto3
-import json
-from botocore.config import Config
+          python - <<'PY'
+          import os
+          import json
+          import boto3
+          from botocore.config import Config
 
-clips = json.loads(os.environ['CLIPS_JSON'])
-job_id = os.environ['JOB_ID']
+          clips = json.loads(os.environ.get('CLIPS_JSON') or '[]')
+          job_id = os.environ['JOB_ID']
 
-s3 = boto3.client(
-    's3',
-    endpoint_url=f'https://{os.environ[\"R2_ACCOUNT_ID\"]}.r2.cloudflarestorage.com',
-    aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
-    aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
-    config=Config(signature_version='s3v4'),
-    region_name='auto'
-)
+          s3 = boto3.client(
+              's3',
+              endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+              aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
+              aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
+              config=Config(signature_version='s3v4'),
+              region_name='auto',
+          )
 
-uploaded = []
-for clip in clips:
-    key = f'jobs/{job_id}/{os.path.basename(clip)}'
-    s3.upload_file(clip, os.environ['R2_BUCKET'], key)
-    uploaded.append(key)
-    print(f'Uploaded {clip} to {key}')
+          uploaded = []
+          for clip in clips:
+              key = f'jobs/{job_id}/{os.path.basename(clip)}'
+              s3.upload_file(clip, os.environ['R2_BUCKET'], key)
+              uploaded.append(key)
+              print(f'Uploaded {clip} to {key}')
 
-print(f'uploaded={json.dumps(uploaded)}')
-          " >> $GITHUB_OUTPUT
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f'uploaded={json.dumps(uploaded)}\n')
+          PY
 
       - name: Report completion to Worker
         if: always()
         env:
           JOB_ID: ${{ github.event.client_payload.job_id }}
           CLIPS_JSON: ${{ steps.upload.outputs.uploaded }}
-          CHOPIFY_SUCCESS: ${{ steps.chopify.conclusion == 'success' }}
+          CHOPIFY_OUTCOME: ${{ steps.chopify.outcome }}
+          UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
         run: |
-          python -c "
-import os
-import requests
-import json
+          python - <<'PY'
+          import os
+          import json
+          import sys
+          import requests
 
-job_id = os.environ['JOB_ID']
-worker_url = os.environ['WORKER_URL']
-worker_secret = os.environ['WORKER_SECRET']
+          job_id = os.environ['JOB_ID']
+          worker_url = os.environ['WORKER_URL']
+          run_url = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
 
-clips = json.loads(os.environ['CLIPS_JSON']) if os.environ['CLIPS_JSON'] else []
-success = os.environ['CHOPIFY_SUCCESS'] == 'True'
+          chopify = os.environ.get('CHOPIFY_OUTCOME', '')
+          upload = os.environ.get('UPLOAD_OUTCOME', '')
+          success = chopify == 'success' and upload == 'success'
+          clips = json.loads(os.environ.get('CLIPS_JSON') or '[]') if success else []
 
-headers = {'Authorization': f'Bearer {worker_secret}', 'Content-Type': 'application/json'}
-response = requests.post(
-    f'{worker_url}/api/internal/jobs/{job_id}/complete',
-    headers=headers,
-    json={'clips': clips, 'status': 'completed' if success else 'failed'}
-)
-print(f'Report completion: {response.status_code} {response.text}')
-          "
+          payload = {'clips': clips, 'status': 'completed' if success else 'failed', 'github_run_url': run_url}
+          if not success:
+              payload['error_message'] = f'Workflow failed (processing: {chopify or "not run"}, upload: {upload or "not run"}). See {run_url}'
+
+          response = requests.post(
+              f'{worker_url}/api/internal/jobs/{job_id}/complete',
+              headers={'Authorization': f"Bearer {os.environ['WORKER_SECRET']}", 'Content-Type': 'application/json'},
+              json=payload,
+              timeout=30,
+          )
+          print(f'Report completion: {response.status_code} {response.text}')
+          if not response.ok:
+              sys.exit(1)
+          PY
