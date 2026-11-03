@@ -1,7 +1,8 @@
-import { Env, TelegramWebhookUpdate, TelegramMessage, TelegramUser, TelegramReplyKeyboardMarkup, TelegramKeyboardButton, TelegramWebAppInfo, ApiResponse, TelegramCallbackQuery, TelegramInlineQuery, TelegramInlineKeyboardButton, TelegramInlineKeyboardMarkup } from './types';
+import { Env, TelegramWebhookUpdate, TelegramMessage, TelegramUser, TelegramReplyKeyboardMarkup, TelegramKeyboardButton, TelegramWebAppInfo, ApiResponse, TelegramCallbackQuery, TelegramInlineQuery, TelegramInlineKeyboardButton, TelegramInlineKeyboardMarkup, Job } from './types';
 import { validateTelegramInitData, createApiResponse, sanitizeFilename, validateMimeType, validateFileExtension, getExtensionFromMimeType } from './utils';
 import { Database } from './db';
 import { R2Uploader } from './r2';
+import { createProcessingJob } from './api';
 
 const MAIN_KEYBOARD: TelegramReplyKeyboardMarkup = {
   keyboard: [
@@ -75,8 +76,10 @@ export class TelegramBot {
   private miniappUrl: string;
   private maxUploadBytes: number;
   private chunkSize: number;
+  private env: Env;
 
   constructor(env: Env) {
+    this.env = env;
     this.botToken = env.TELEGRAM_BOT_TOKEN;
     this.webhookSecret = env.TELEGRAM_WEBHOOK_SECRET;
     this.workerSecret = env.WORKER_SECRET;
@@ -291,27 +294,18 @@ export class TelegramBot {
         if (upload.status !== 'uploaded') {
           return this.editMessage(chatId, messageId, '❌ Can only process completed uploads.');
         }
-        // Create job via internal API
+        // Create job directly using shared function (avoids external HTTP request)
         try {
-          const response = await fetch(`${this.workerUrl}/api/internal/jobs`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${this.workerSecret}`,
-            },
-            body: JSON.stringify({
-              uploadId: upload.id,
-              telegramUserId: userId,
-              aspectRatio: '9:16',
-              captionStyle: 'default',
-              enableTighten: false,
-              enableLoudnorm: false,
-            }),
-          });
-          const result = await response.json() as { ok: boolean; error?: string; data?: { id: string } };
-          if (!result.ok) throw new Error(result.error || 'Failed to create job');
-          
-          const job = result.data!;
+          const job = await createProcessingJob(
+            this.env,
+            this.db,
+            upload.id,
+            userId,
+            '9:16',
+            'default',
+            false,
+            false
+          );
           
           return this.editMessage(chatId, messageId, `✅ <b>Processing Started</b>\n\nJob ID: <code>${job.id}</code>\nFile: <code>${upload.original_filename}</code>\n\nYou'll receive the clips when processing completes.`, {
             parse_mode: 'HTML',
@@ -353,25 +347,18 @@ export class TelegramBot {
           return this.editMessage(chatId, messageId, '❌ Can only retry failed or cancelled jobs.');
         }
         await db.updateJob(jobId, { status: 'pending', error_message: null });
-        // Dispatch via internal API
+        // Dispatch via shared function (avoids external HTTP request)
         try {
-          const response = await fetch(`${this.workerUrl}/api/internal/jobs`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${this.workerSecret}`,
-            },
-            body: JSON.stringify({
-              uploadId: job.upload_id,
-              telegramUserId: userId,
-              aspectRatio: job.aspect_ratio,
-              captionStyle: job.caption_style,
-              enableTighten: job.enable_tighten === 1,
-              enableLoudnorm: job.enable_loudnorm === 1,
-            }),
-          });
-          const result = await response.json() as { ok: boolean; error?: string };
-          if (!result.ok) throw new Error(result.error || 'Failed to queue retry');
+          await createProcessingJob(
+            this.env,
+            this.db,
+            job.upload_id,
+            userId,
+            job.aspect_ratio,
+            job.caption_style,
+            job.enable_tighten === 1,
+            job.enable_loudnorm === 1
+          );
         } catch (e) {
           console.error('Failed to dispatch retry workflow:', e);
         }

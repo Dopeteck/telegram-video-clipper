@@ -406,19 +406,21 @@ internalApi.post('/jobs/:jobId/complete', async (c) => {
   return c.json(createApiResponse(true, updatedJob));
 });
 
-internalApi.post('/jobs', async (c) => {
-  const body = await c.req.json();
-  
-  const { uploadId, telegramUserId, aspectRatio, captionStyle, enableTighten, enableLoudnorm } = body;
-  if (!uploadId || !telegramUserId) {
-    return c.json(createApiResponse(false, undefined, 'Missing required fields'), 400);
-  }
-
-  const db = new Database(c.env.DB, c.env);
+// Shared function for job creation - can be called directly by internal API or bot
+export async function createProcessingJob(
+  env: Env,
+  db: Database,
+  uploadId: string,
+  telegramUserId: number,
+  aspectRatio: string,
+  captionStyle: string,
+  enableTighten: boolean,
+  enableLoudnorm: boolean
+): Promise<Job> {
   const upload = await db.getUpload(uploadId);
   
   if (!upload) {
-    return c.json(createApiResponse(false, undefined, 'Upload not found'), 404);
+    throw new Error('Upload not found');
   }
 
   const jobId = `job_${Date.now()}_${telegramUserId}`;
@@ -439,13 +441,44 @@ internalApi.post('/jobs', async (c) => {
 
   // Dispatch GitHub Actions workflow
   try {
-    await dispatchWorkflow(c.env, jobId, uploadId, telegramUserId);
+    await dispatchWorkflow(env, jobId, uploadId, telegramUserId);
   } catch (e) {
     console.error('Failed to dispatch workflow:', e);
     // Don't fail the request, just log the error
   }
 
-  return c.json(createApiResponse(true, job));
+  return job;
+}
+
+internalApi.post('/jobs', async (c) => {
+  const body = await c.req.json();
+  
+  const { uploadId, telegramUserId, aspectRatio, captionStyle, enableTighten, enableLoudnorm } = body;
+  if (!uploadId || !telegramUserId) {
+    return c.json(createApiResponse(false, undefined, 'Missing required fields'), 400);
+  }
+
+  const db = new Database(c.env.DB, c.env);
+  
+  try {
+    const job = await createProcessingJob(
+      c.env,
+      db,
+      uploadId,
+      telegramUserId,
+      aspectRatio || '9:16',
+      captionStyle || 'default',
+      enableTighten ? true : false,
+      enableLoudnorm ? true : false
+    );
+    return c.json(createApiResponse(true, job));
+  } catch (error) {
+    if (error instanceof Error && error.message === 'Upload not found') {
+      return c.json(createApiResponse(false, undefined, 'Upload not found'), 404);
+    }
+    console.error('Job creation failed:', error);
+    return c.json(createApiResponse(false, undefined, error instanceof Error ? error.message : 'Failed to create job'), 500);
+  }
 });
 
 async function dispatchWorkflow(env: Env, jobId: string, uploadId: string, telegramUserId: number): Promise<void> {
