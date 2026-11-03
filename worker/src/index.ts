@@ -20,6 +20,31 @@ app.use('*', cors({
   credentials: true,
 }));
 
+// Global error handler - ensures all errors return JSON
+app.onError((err, c) => {
+  const requestId = crypto.randomUUID();
+  console.error(`[${requestId}] Unhandled error:`, err);
+  return c.json({ 
+    ok: false, 
+    error: 'Internal server error', 
+    code: 'INTERNAL_ERROR',
+    requestId 
+  }, 500);
+});
+
+app.use('*', cors({
+  origin: [
+    'https://*.telegram.org', 
+    'https://web.telegram.org', 
+    'https://telegram.org',
+    'https://telegram-video-clipper-miniapp.pages.dev',
+    'https://*.pages.dev'
+  ],
+  allowHeaders: ['Content-Type', 'Authorization'],
+  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  credentials: true,
+}));
+
 app.route('/api', api);
 app.route('/api/internal', internalApi);
 
@@ -50,12 +75,13 @@ app.get('/health', (c) => c.json({ status: 'ok' }));
 export default {
   fetch: app.fetch,
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    console.log(`Scheduled cleanup triggered at ${new Date().toISOString()}, cron: ${controller.cron}`);
+    const requestId = crypto.randomUUID();
+    console.log(`[${requestId}] Scheduled cleanup triggered at ${new Date().toISOString()}, cron: ${controller.cron}`);
     const db = new Database(env.DB, env);
     
     try {
       const expiredUploads = await db.getExpiredUploads();
-      console.log(`Found ${expiredUploads.length} expired uploads`);
+      console.log(`[${requestId}] Found ${expiredUploads.length} expired uploads`);
       
       for (const upload of expiredUploads) {
         if (upload.multipart_upload_id) {
@@ -67,10 +93,10 @@ export default {
           status: 'expired', 
           error_message: 'Upload session expired' 
         });
-        console.log(`Expired upload ${upload.id}`);
+        console.log(`[${requestId}] Expired upload ${upload.id}`);
       }
     } catch (e) {
-      console.error('Cleanup failed:', e);
+      console.error(`[${requestId}] Cleanup failed:`, e);
     }
   },
 };

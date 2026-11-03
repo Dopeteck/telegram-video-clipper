@@ -31,8 +31,21 @@ const UploadsListScreen: React.FC<Props> = ({ apiBaseUrl, initData, onNavigate }
         ...options.headers,
       },
     });
-    const data = await response.json();
-    if (!data.ok) throw new Error(data.error || 'Request failed');
+    
+    const contentType = response.headers.get('content-type');
+    let data: any;
+    
+    if (contentType && contentType.includes('application/json')) {
+      data = await response.json();
+    } else {
+      const text = await response.text();
+      console.error('Non-JSON response:', response.status, text);
+      throw new Error(`Server error (${response.status}): ${text || 'Unknown error'}`);
+    }
+    
+    if (!response.ok) {
+      throw new Error(data.error || `Request failed with status ${response.status}`);
+    }
     return data.data;
   }, [apiBaseUrl, initData]);
 

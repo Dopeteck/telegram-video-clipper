@@ -29,6 +29,7 @@ api.use('*', async (c, next) => {
 });
 
 api.post('/upload/initiate', async (c) => {
+  const requestId = crypto.randomUUID();
   const user = c.get('telegramUser');
   const chat = c.get('telegramChat');
   const body = await c.req.json();
@@ -64,31 +65,58 @@ api.post('/upload/initiate', async (c) => {
   const chunkSize = parseInt(c.env.CHUNK_SIZE || '5242880', 10);
   const totalParts = Math.ceil(fileSize / chunkSize);
 
-  const upload = await db.createUpload({
-    id: uploadId,
-    telegram_user_id: user.id,
-    telegram_chat_id: chat?.id ?? null,
-    original_filename: filename,
-    object_key: objectKey,
-    file_size: fileSize,
-    mime_type: mimeType,
-    status: 'uploading',
-  });
+  try {
+    console.log(`[${requestId}] db_create_upload: uploadId=${uploadId}, userId=${user.id}, fileSize=${fileSize}`);
+    
+    const upload = await db.createUpload({
+      id: uploadId,
+      telegram_user_id: user.id,
+      telegram_chat_id: chat?.id ?? null,
+      original_filename: filename,
+      object_key: objectKey,
+      file_size: fileSize,
+      mime_type: mimeType,
+      status: 'uploading',
+    });
 
-  const initResponse = await r2.initiateMultipartUpload(objectKey, mimeType, totalParts);
-  await db.updateUpload(uploadId, { multipart_upload_id: initResponse.uploadId });
+    console.log(`[${requestId}] r2_create_multipart: uploadId=${uploadId}, key=${objectKey}, totalParts=${totalParts}`);
+    
+    const initResponse = await r2.initiateMultipartUpload(objectKey, mimeType, totalParts);
+    
+    console.log(`[${requestId}] r2_presign_parts: uploadId=${initResponse.uploadId}, parts=${initResponse.partUrls.length}`);
 
-  return c.json(createApiResponse(true, {
-    uploadId: upload.id,
-    objectKey: upload.object_key,
-    multipartUploadId: initResponse.uploadId,
-    totalParts,
-    chunkSize,
-    partUrls: initResponse.partUrls,
-  }));
+    await db.updateUpload(uploadId, { multipart_upload_id: initResponse.uploadId });
+
+    console.log(`[${requestId}] db_update_upload: uploadId=${uploadId}, multipart_upload_id=${initResponse.uploadId}`);
+
+    return c.json(createApiResponse(true, {
+      uploadId: upload.id,
+      objectKey: upload.object_key,
+      multipartUploadId: initResponse.uploadId,
+      totalParts,
+      chunkSize,
+      partUrls: initResponse.partUrls,
+    }));
+  } catch (error) {
+    console.error(`[${requestId}] Upload initiate failed:`, error);
+    
+    // Try to clean up D1 record if it was created
+    try {
+      await db.updateUpload(uploadId, { 
+        status: 'failed', 
+        error_message: error instanceof Error ? error.message : 'Unknown error' 
+      });
+    } catch (e) {
+      console.error(`[${requestId}] Failed to mark upload as failed:`, e);
+    }
+    
+    return c.json(createApiResponse(false, undefined, 
+      error instanceof Error ? error.message : 'Failed to initiate upload'), 500);
+  }
 });
 
 api.post('/upload/part-urls', async (c) => {
+  const requestId = crypto.randomUUID();
   const user = c.get('telegramUser');
   const body = await c.req.json();
   
@@ -108,10 +136,20 @@ api.post('/upload/part-urls', async (c) => {
     return c.json(createApiResponse(false, undefined, 'Multipart upload not initialized'), 400);
   }
 
-  const r2 = new R2Uploader(c.env);
-  const partUrls = await r2.generatePartUploadUrls(upload.object_key, upload.multipart_upload_id, partNumbers);
+  try {
+    console.log(`[${requestId}] r2_presign_parts: uploadId=${uploadId}, parts=${partNumbers.join(',')}`);
+    
+    const r2 = new R2Uploader(c.env);
+    const partUrls = await r2.generatePartUploadUrls(upload.object_key, upload.multipart_upload_id, partNumbers);
 
-  return c.json(createApiResponse(true, { partUrls }));
+    console.log(`[${requestId}] r2_presign_parts complete: uploadId=${uploadId}, generated=${partUrls.length}`);
+
+    return c.json(createApiResponse(true, { partUrls }));
+  } catch (error) {
+    console.error(`[${requestId}] Part URLs generation failed:`, error);
+    return c.json(createApiResponse(false, undefined, 
+      error instanceof Error ? error.message : 'Failed to generate part URLs'), 500);
+  }
 });
 
 api.post('/upload/part-complete', async (c) => {
