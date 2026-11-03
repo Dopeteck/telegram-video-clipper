@@ -440,15 +440,15 @@ export async function createProcessingJob(
     github_run_url: null,
   });
 
-  // Dispatch GitHub Actions workflow
-  try {
-    await dispatchWorkflow(env, jobId, uploadId, telegramUserId);
-  } catch (e) {
-    console.error('Failed to dispatch workflow:', e);
-    // Don't fail the request, just log the error
+  // Dispatch GitHub Actions workflow - let errors propagate
+  await dispatchWorkflow(env, jobId, uploadId, telegramUserId);
+  
+  // Fetch and return the updated job with queued status and GitHub URL
+  const updatedJob = await db.getJob(jobId);
+  if (!updatedJob) {
+    throw new Error('Failed to retrieve updated job after dispatch');
   }
-
-  return job;
+  return updatedJob;
 }
 
 internalApi.post('/jobs', async (c) => {
