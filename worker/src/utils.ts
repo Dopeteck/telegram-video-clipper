@@ -193,3 +193,16 @@ export function formatDuration(seconds: number): string {
   if (hrs > 0) return `${hrs}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
+
+// Constant-time string comparison (avoids leaking secret prefixes via timing).
+export function safeEqual(a: string, b: string): boolean {
+  const enc = new TextEncoder();
+  const x = enc.encode(a);
+  const y = enc.encode(b);
+  let diff = x.length ^ y.length;
+  const len = Math.max(x.length, y.length);
+  for (let i = 0; i < len; i++) {
+    diff |= (x[i] ?? 0) ^ (y[i] ?? 0);
+  }
+  return diff === 0;
+}

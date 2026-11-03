@@ -90,6 +90,10 @@ jobs:
         working-directory: ./miniapp
         run: npx tsc --noEmit
 
+      - name: Run miniapp tests
+        working-directory: ./miniapp
+        run: npm test
+
       - name: Build miniapp
         working-directory: ./miniapp
         run: npm run build

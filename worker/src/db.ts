@@ -221,6 +221,13 @@ export class Database {
     return result || null;
   }
 
+  async getActiveJobForUpload(uploadId: string): Promise<Job | null> {
+    const result = await this.db.prepare(`
+      SELECT * FROM jobs WHERE upload_id = ? AND status IN ('pending', 'queued', 'processing') ORDER BY created_at DESC LIMIT 1
+    `).bind(uploadId).first<Job>();
+    return result || null;
+  }
+
   async updateJob(id: string, updates: Partial<Job>): Promise<Job | null> {
     const fields: string[] = [];
     const values: unknown[] = [];
