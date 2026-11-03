@@ -334,7 +334,28 @@ export class TelegramBot {
           return this.editMessage(chatId, messageId, '❌ Can only retry failed or cancelled jobs.');
         }
         await db.updateJob(jobId, { status: 'pending', error_message: null });
-        await this.dispatchWorkflow(jobId, job.upload_id, userId);
+        // Dispatch via internal API
+        try {
+          const response = await fetch(`${this.appOrigin}/api/internal/jobs`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${this.workerSecret}`,
+            },
+            body: JSON.stringify({
+              uploadId: job.upload_id,
+              telegramUserId: userId,
+              aspectRatio: job.aspect_ratio,
+              captionStyle: job.caption_style,
+              enableTighten: job.enable_tighten === 1,
+              enableLoudnorm: job.enable_loudnorm === 1,
+            }),
+          });
+          const result = await response.json() as { ok: boolean; error?: string };
+          if (!result.ok) throw new Error(result.error || 'Failed to queue retry');
+        } catch (e) {
+          console.error('Failed to dispatch retry workflow:', e);
+        }
         return this.editMessage(chatId, messageId, '🔄 Job queued for retry.', { reply_markup: this.getMainKeyboard() });
 
       case 'download':
