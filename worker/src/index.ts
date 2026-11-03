@@ -37,7 +37,7 @@ app.post('/telegram/webhook', async (c) => {
 
 app.get('/telegram/setup', async (c) => {
   const bot = new TelegramBot(c.env);
-  const webhookResult = await bot.setWebhook(c.env.APP_ORIGIN);
+  const webhookResult = await bot.setWebhook(c.env.WORKER_URL);
   const commandsResult = await bot.setMyCommands();
   const menuResult = await bot.setMenuButton();
   return c.json({ webhook: webhookResult, commands: commandsResult, menu: menuResult });
