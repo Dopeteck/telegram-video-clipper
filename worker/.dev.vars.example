@@ -33,7 +33,7 @@ RATE_LIMIT_MAX_REQUESTS="30"
 WORKER_SECRET="generate_with_openssl_rand_hex_32"
 
 # GitHub Configuration (for workflow dispatch)
-GH_TOKEN="your_github_personal_access_token_with_repo_scope"
+GITHUB_TOKEN="your_github_personal_access_token_with_repo_scope"
 GITHUB_REPO="Dopeteck/telegram-video-clipper"
 
 # D1 Database (automatically bound via wrangler.toml)

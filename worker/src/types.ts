@@ -19,7 +19,7 @@ export interface Env {
   R2_ACCESS_KEY_ID: string;
   R2_SECRET_ACCESS_KEY: string;
   WORKER_SECRET: string;
-  GH_TOKEN: string;
+  GITHUB_TOKEN: string;
   GITHUB_REPO: string;
 }
 

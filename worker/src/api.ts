@@ -482,13 +482,12 @@ internalApi.post('/jobs', async (c) => {
   }
 });
 
-async function dispatchWorkflow(env: Env, jobId: string, uploadId: string, telegramUserId: number): Promise<string | null> {
-  const githubToken = env.GH_TOKEN;
+async function dispatchWorkflow(env: Env, jobId: string, uploadId: string, telegramUserId: number): Promise<string> {
+  const githubToken = env.GITHUB_TOKEN;
   const githubRepo = env.GITHUB_REPO || 'Dopeteck/telegram-video-clipper';
   
   if (!githubToken) {
-    console.warn('GH_TOKEN not configured, skipping workflow dispatch');
-    return null;
+    throw new Error('GITHUB_TOKEN secret not configured in Worker environment');
   }
 
   const db = new Database(env.DB, env);
@@ -537,4 +536,4 @@ async function dispatchWorkflow(env: Env, jobId: string, uploadId: string, teleg
   return `https://github.com/${githubRepo}/actions`;
 }
 
-export { api, internalApi };
+export { api, internalApi, dispatchWorkflow };

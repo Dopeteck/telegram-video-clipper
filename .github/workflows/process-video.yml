@@ -25,7 +25,7 @@ env:
   R2_BUCKET: telegram-video-clipper-uploads
   WORKER_URL: ${{ secrets.WORKER_URL }}
   WORKER_SECRET: ${{ secrets.WORKER_SECRET }}
-  GH_TOKEN: ${{ secrets.GH_TOKEN }}
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   process:
