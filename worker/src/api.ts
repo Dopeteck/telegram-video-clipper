@@ -437,6 +437,7 @@ export async function createProcessingJob(
     clip_count: 0,
     error_message: null,
     completed_at: null,
+    github_run_url: null,
   });
 
   // Dispatch GitHub Actions workflow
@@ -481,16 +482,17 @@ internalApi.post('/jobs', async (c) => {
   }
 });
 
-async function dispatchWorkflow(env: Env, jobId: string, uploadId: string, telegramUserId: number): Promise<void> {
+async function dispatchWorkflow(env: Env, jobId: string, uploadId: string, telegramUserId: number): Promise<string | null> {
   const githubToken = env.GITHUB_TOKEN;
   const githubRepo = env.GITHUB_REPO || 'Dopeteck/telegram-video-clipper';
   
   if (!githubToken) {
     console.warn('GITHUB_TOKEN not configured, skipping workflow dispatch');
-    return;
+    return null;
   }
 
-  const upload = await (await import('./db')).Database.prototype.getUpload.call(new (await import('./db')).Database(env.DB, env), uploadId);
+  const db = new Database(env.DB, env);
+  const upload = await db.getUpload(uploadId);
   
   const response = await fetch(`https://api.github.com/repos/${githubRepo}/dispatches`, {
     method: 'POST',
@@ -515,7 +517,15 @@ async function dispatchWorkflow(env: Env, jobId: string, uploadId: string, teleg
     throw new Error(`GitHub dispatch failed: ${response.status} ${error}`);
   }
 
-  console.log(`Dispatched process-video workflow for job ${jobId}`);
+  // Get the workflow run URL from the response
+  const data = await response.json() as { html_url?: string; id?: number };
+  const runUrl = data.html_url || `https://github.com/${githubRepo}/actions/runs/${data.id}`;
+  
+  // Update the job with the GitHub Actions run URL
+  await db.updateJob(jobId, { github_run_url: runUrl });
+  
+  console.log(`Dispatched process-video workflow for job ${jobId}, run URL: ${runUrl}`);
+  return runUrl;
 }
 
 export { api, internalApi };

@@ -78,6 +78,7 @@ export interface Job {
   created_at: number;
   updated_at: number;
   completed_at: number | null;
+  github_run_url: string | null;
 }
 
 export interface TelegramInitData {

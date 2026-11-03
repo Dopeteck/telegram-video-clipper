@@ -294,7 +294,11 @@ export class TelegramBot {
         if (upload.status !== 'uploaded') {
           return this.editMessage(chatId, messageId, '❌ Can only process completed uploads.');
         }
-        // Create job directly using shared function (avoids external HTTP request)
+        // Immediately show "Starting..." feedback
+        await this.editMessage(chatId, messageId, `⏳ <b>Starting processing...</b>\n\nFile: <code>${upload.original_filename}</code>\n\nDispatching to GitHub Actions...`, {
+          parse_mode: 'HTML',
+        });
+        
         try {
           const job = await createProcessingJob(
             this.env,
@@ -307,12 +311,22 @@ export class TelegramBot {
             false
           );
           
-          return this.editMessage(chatId, messageId, `✅ <b>Processing Started</b>\n\nJob ID: <code>${job.id}</code>\nFile: <code>${upload.original_filename}</code>\n\nYou'll receive the clips when processing completes.`, {
+          let message = `✅ <b>Processing Started</b>\n\nJob ID: <code>${job.id}</code>\nFile: <code>${upload.original_filename}</code>\n\n`;
+          
+          if (job.github_run_url) {
+            message += `🔗 <a href="${job.github_run_url}">View GitHub Actions Run</a>\n\n`;
+          }
+          
+          message += `You'll receive the clips when processing completes.`;
+          
+          return this.editMessage(chatId, messageId, message, {
             parse_mode: 'HTML',
             reply_markup: this.getMainKeyboard(),
           });
         } catch (e) {
-          return this.editMessage(chatId, messageId, `❌ Failed to start processing: ${e instanceof Error ? e.message : 'Unknown error'}`);
+          return this.editMessage(chatId, messageId, `❌ Failed to start processing: ${e instanceof Error ? e.message : 'Unknown error'}`, {
+            reply_markup: this.getMainKeyboard(),
+          });
         }
     }
 
