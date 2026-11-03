@@ -1,0 +1,251 @@
+name: Process Video
+
+on:
+  repository_dispatch:
+    types: [process-video]
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: 'Job ID'
+        required: true
+        type: string
+      upload_id:
+        description: 'Upload ID'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+  R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+  R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+  R2_BUCKET: telegram-video-clipper-uploads
+  WORKER_URL: ${{ secrets.WORKER_URL }}
+  WORKER_SECRET: ${{ secrets.WORKER_SECRET }}
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-liberation
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+          pip install boto3 requests
+
+      - name: Download video from R2
+        id: download
+        env:
+          JOB_ID: ${{ github.event.client_payload.job_id }}
+          UPLOAD_ID: ${{ github.event.client_payload.upload_id }}
+          OBJECT_KEY: ${{ github.event.client_payload.object_key }}
+        run: |
+          python -c "
+import os
+import boto3
+from botocore.config import Config
+
+job_id = os.environ['JOB_ID']
+upload_id = os.environ['UPLOAD_ID']
+object_key = os.environ['OBJECT_KEY']
+
+s3 = boto3.client(
+    's3',
+    endpoint_url=f'https://{os.environ[\"R2_ACCOUNT_ID\"]}.r2.cloudflarestorage.com',
+    aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
+    aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
+    config=Config(signature_version='s3v4'),
+    region_name='auto'
+)
+
+local_path = f'/tmp/{os.path.basename(object_key)}'
+print(f'Downloading {object_key} to {local_path}')
+s3.download_file(os.environ['R2_BUCKET'], object_key, local_path)
+print(f'Downloaded {os.path.getsize(local_path)} bytes')
+print(f'video_path={local_path}')
+          " >> $GITHUB_OUTPUT
+
+      - name: Get job preferences
+        id: prefs
+        env:
+          JOB_ID: ${{ github.event.client_payload.job_id }}
+        run: |
+          python -c "
+import os
+import requests
+
+job_id = os.environ['JOB_ID']
+worker_url = os.environ['WORKER_URL']
+worker_secret = os.environ['WORKER_SECRET']
+
+headers = {'Authorization': f'Bearer {worker_secret}'}
+response = requests.get(f'{worker_url}/api/internal/jobs/{job_id}', headers=headers)
+job = response.json()['data']
+
+print(f'Job: {job}')
+print(f'aspect_ratio={job.get(\"aspect_ratio\", \"9:16\")}')
+print(f'caption_style={job.get(\"caption_style\", \"default\")}')
+print(f'enable_tighten={job.get(\"enable_tighten\", 0)}')
+print(f'enable_loudnorm={job.get(\"enable_loudnorm\", 0)}')
+          " >> $GITHUB_OUTPUT
+
+      - name: Report job started
+        env:
+          JOB_ID: ${{ github.event.client_payload.job_id }}
+        run: |
+          python -c "
+import os
+import requests
+
+job_id = os.environ['JOB_ID']
+worker_url = os.environ['WORKER_URL']
+worker_secret = os.environ['WORKER_SECRET']
+
+headers = {'Authorization': f'Bearer {worker_secret}', 'Content-Type': 'application/json'}
+response = requests.post(
+    f'{worker_url}/api/internal/jobs/{job_id}/complete',
+    headers=headers,
+    json={'clips': [], 'status': 'processing'}
+)
+print(f'Report started: {response.status_code}')
+          "
+
+      - name: Run Chopify processing
+        id: chopify
+        env:
+          VIDEO_PATH: ${{ steps.download.outputs.video_path }}
+          ASPECT_RATIO: ${{ steps.prefs.outputs.aspect_ratio }}
+          CAPTION_STYLE: ${{ steps.prefs.outputs.caption_style }}
+          ENABLE_TIGHTEN: ${{ steps.prefs.outputs.enable_tighten }}
+          ENABLE_LOUDNORM: ${{ steps.prefs.outputs.enable_loudnorm }}
+          JOB_ID: ${{ github.event.client_payload.job_id }}
+        run: |
+          python -c "
+import os
+import subprocess
+import json
+
+video_path = os.environ['VIDEO_PATH']
+aspect_ratio = os.environ['ASPECT_RATIO']
+caption_style = os.environ['CAPTION_STYLE']
+enable_tighten = os.environ['ENABLE_TIGHTEN'] == '1'
+enable_loudnorm = os.environ['ENABLE_LOUDNORM'] == '1'
+job_id = os.environ['JOB_ID']
+
+work_dir = f'/tmp/chopify_work_{job_id}'
+os.makedirs(work_dir, exist_ok=True)
+out_dir = f'{work_dir}/clips'
+os.makedirs(out_dir, exist_ok=True)
+
+cmd = [
+    'python', 'chopify.py', video_path,
+    '--aspect', aspect_ratio,
+    '--workdir', work_dir,
+    '--out', out_dir,
+    '--action', 'render',
+    '--no-preflight'
+]
+
+if caption_style != 'default':
+    cmd.extend(['--caption-style', caption_style])
+if enable_tighten:
+    cmd.append('--tighten')
+if enable_loudnorm:
+    cmd.append('--loudnorm')
+
+print(f'Running: {\" \".join(cmd)}')
+result = subprocess.run(cmd, capture_output=True, text=True, cwd='.')
+print(f'stdout: {result.stdout}')
+print(f'stderr: {result.stderr}')
+print(f'returncode: {result.returncode}')
+
+if result.returncode != 0:
+    exit(1)
+
+clips = []
+for f in os.listdir(out_dir):
+    if f.endswith('.mp4'):
+        clips.append(os.path.join(out_dir, f))
+
+print(f'clips={clips}')
+print(f'clips={clips}')
+          " >> $GITHUB_OUTPUT
+
+      - name: Upload clips to R2
+        id: upload
+        env:
+          JOB_ID: ${{ github.event.client_payload.job_id }}
+          CLIPS: ${{ steps.chopify.outputs.clips }}
+        run: |
+          python -c "
+import os
+import boto3
+from botocore.config import Config
+
+clips = eval(os.environ['CLIPS'])
+job_id = os.environ['JOB_ID']
+
+s3 = boto3.client(
+    's3',
+    endpoint_url=f'https://{os.environ[\"R2_ACCOUNT_ID\"]}.r2.cloudflarestorage.com',
+    aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
+    aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
+    config=Config(signature_version='s3v4'),
+    region_name='auto'
+)
+
+uploaded = []
+for clip in clips:
+    key = f'jobs/{job_id}/{os.path.basename(clip)}'
+    s3.upload_file(clip, os.environ['R2_BUCKET'], key)
+    uploaded.append(key)
+    print(f'Uploaded {clip} to {key}')
+
+print(f'uploaded={uploaded}')
+          " >> $GITHUB_OUTPUT
+
+      - name: Report completion to Worker
+        if: always()
+        env:
+          JOB_ID: ${{ github.event.client_payload.job_id }}
+          CLIPS: ${{ steps.upload.outputs.uploaded }}
+          CHOPIFY_SUCCESS: ${{ steps.chopify.conclusion == 'success' }}
+        run: |
+          python -c "
+import os
+import requests
+
+job_id = os.environ['JOB_ID']
+worker_url = os.environ['WORKER_URL']
+worker_secret = os.environ['WORKER_SECRET']
+
+clips = eval(os.environ['CLIPS']) if os.environ['CLIPS'] else []
+success = os.environ['CHOPIFY_SUCCESS'] == 'True'
+
+headers = {'Authorization': f'Bearer {worker_secret}', 'Content-Type': 'application/json'}
+response = requests.post(
+    f'{worker_url}/api/internal/jobs/{job_id}/complete',
+    headers=headers,
+    json={'clips': clips, 'status': 'completed' if success else 'failed'}
+)
+print(f'Report completion: {response.status_code} {response.text}')
+          "

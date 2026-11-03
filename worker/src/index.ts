@@ -3,11 +3,18 @@ import { cors } from 'hono/cors';
 import { Env } from './types';
 import { api, internalApi } from './api';
 import { TelegramBot } from './bot';
+import { Database } from './db';
 
 const app = new Hono<{ Bindings: Env }>();
 
 app.use('*', cors({
-  origin: ['https://*.telegram.org', 'https://web.telegram.org', 'https://telegram.org'],
+  origin: [
+    'https://*.telegram.org', 
+    'https://web.telegram.org', 
+    'https://telegram.org',
+    'https://telegram-video-clipper-miniapp.pages.dev',
+    'https://*.pages.dev'
+  ],
   allowHeaders: ['Content-Type', 'Authorization'],
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   credentials: true,
@@ -36,12 +43,34 @@ app.get('/telegram/setup', async (c) => {
   return c.json({ webhook: webhookResult, commands: commandsResult, menu: menuResult });
 });
 
-app.get('/upload*', async (c) => {
-  return c.redirect(`${c.env.APP_ORIGIN}/miniapp${c.req.path.replace('/upload', '')}${c.req.query() ? '?' + c.req.query() : ''}`);
-});
+// Health check for Pages/Workers monitoring
+app.get('/health', (c) => c.json({ status: 'ok' }));
 
-app.get('*', (c) => {
-  return c.notFound();
-});
-
-export default app;
+// Scheduled handler for expired upload cleanup
+export default {
+  fetch: app.fetch,
+  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    console.log(`Scheduled cleanup triggered at ${new Date().toISOString()}, cron: ${controller.cron}`);
+    const db = new Database(env.DB, env);
+    
+    try {
+      const expiredUploads = await db.getExpiredUploads();
+      console.log(`Found ${expiredUploads.length} expired uploads`);
+      
+      for (const upload of expiredUploads) {
+        if (upload.multipart_upload_id) {
+          const { R2Uploader } = await import('./r2');
+          const r2 = new R2Uploader(env);
+          await r2.abortMultipartUpload(upload.object_key, upload.multipart_upload_id);
+        }
+        await db.updateUpload(upload.id, { 
+          status: 'expired', 
+          error_message: 'Upload session expired' 
+        });
+        console.log(`Expired upload ${upload.id}`);
+      }
+    } catch (e) {
+      console.error('Cleanup failed:', e);
+    }
+  },
+};

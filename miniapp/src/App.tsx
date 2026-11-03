@@ -36,7 +36,11 @@ type Screen = 'upload' | 'uploads' | 'settings' | 'help';
 
 type NavigateFn = (screen: Screen) => void;
 
-function App() {
+interface AppProps {
+  apiBaseUrl: string;
+}
+
+function App({ apiBaseUrl }: AppProps) {
   const [screen, setScreen] = useState<Screen>('upload');
   const [user, setUser] = useState<TelegramUser | null>(null);
   const [initData, setInitData] = useState<string>('');
@@ -84,9 +88,9 @@ function App() {
         </div>
       </header>
       <main className="main">
-        {screen === 'upload' && <UploadScreen initData={initData} uploadId={new URLSearchParams(window.location.search).get('upload_id')} onNavigate={navigate} />}
-        {screen === 'uploads' && <UploadsListScreen initData={initData} onNavigate={navigate} />}
-        {screen === 'settings' && <SettingsScreen initData={initData} user={user} />}
+        {screen === 'upload' && <UploadScreen apiBaseUrl={apiBaseUrl} initData={initData} uploadId={new URLSearchParams(window.location.search).get('upload_id')} onNavigate={navigate} />}
+        {screen === 'uploads' && <UploadsListScreen apiBaseUrl={apiBaseUrl} initData={initData} onNavigate={navigate} />}
+        {screen === 'settings' && <SettingsScreen apiBaseUrl={apiBaseUrl} initData={initData} user={user} />}
         {screen === 'help' && <HelpScreen />}
       </main>
       <nav className="bottom-nav">

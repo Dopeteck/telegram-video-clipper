@@ -35,25 +35,31 @@ interface UploadStatus {
 type Screen = 'upload' | 'uploads' | 'settings' | 'help';
 
 interface Props {
+  apiBaseUrl: string;
   initData: string;
   uploadId: string | null;
   onNavigate: (screen: Screen) => void;
 }
 
-const UploadScreen: React.FC<Props> = ({ initData, uploadId: initialUploadId, onNavigate }) => {
+const UploadScreen: React.FC<Props> = ({ apiBaseUrl, initData, uploadId: initialUploadId, onNavigate }) => {
   const [uploadId, setUploadId] = useState<string | null>(initialUploadId);
   const [status, setStatus] = useState<UploadStatus | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [completed, setCompleted] = useState(false);
+  
   const abortControllerRef = useRef<AbortController | null>(null);
-  const uploadedPartsRef = useRef<Set<number>>(new Set());
-  const totalPartsRef = useRef(0);
-  const chunkSizeRef = useRef(0);
+  const uploadStateRef = useRef({
+    uploadedParts: new Set<number>(),
+    totalParts: 0,
+    chunkSize: 0,
+    file: null as File | null,
+    completing: false,
+  });
 
   const apiRequest = useCallback(async (endpoint: string, options: RequestInit = {}) => {
-    const response = await fetch(endpoint, {
+    const response = await fetch(`${apiBaseUrl}${endpoint}`, {
       ...options,
       headers: {
         'Content-Type': 'application/json',
@@ -64,14 +70,14 @@ const UploadScreen: React.FC<Props> = ({ initData, uploadId: initialUploadId, on
     const data = await response.json();
     if (!data.ok) throw new Error(data.error || 'Request failed');
     return data.data;
-  }, [initData]);
+  }, [apiBaseUrl, initData]);
 
   const loadStatus = useCallback(async () => {
     if (!uploadId) return;
     try {
       const data = await apiRequest(`/api/upload/status/${uploadId}`);
       setStatus(data);
-      uploadedPartsRef.current = new Set(
+      uploadStateRef.current.uploadedParts = new Set(
         data.parts.filter((p: any) => p.etag).map((p: any) => p.part_number)
       );
     } catch (e) {
@@ -113,8 +119,10 @@ const UploadScreen: React.FC<Props> = ({ initData, uploadId: initialUploadId, on
       });
 
       setUploadId(data.uploadId);
-      totalPartsRef.current = data.totalParts;
-      chunkSizeRef.current = data.chunkSize;
+      uploadStateRef.current.totalParts = data.totalParts;
+      uploadStateRef.current.chunkSize = data.chunkSize;
+      uploadStateRef.current.file = file;
+      uploadStateRef.current.uploadedParts = new Set();
       
       await uploadParts(data.partUrls);
     } catch (e) {
@@ -135,9 +143,19 @@ const UploadScreen: React.FC<Props> = ({ initData, uploadId: initialUploadId, on
         throw new Error('Upload session expired');
       }
 
+      // Restore totalParts and chunkSize from server
+      const chunkSize = parseInt(currentStatus.upload.mime_type || '5242880', 10) || 5242880;
+      const totalParts = Math.ceil(currentStatus.upload.file_size / chunkSize);
+      
+      uploadStateRef.current.totalParts = totalParts;
+      uploadStateRef.current.chunkSize = chunkSize;
+      uploadStateRef.current.uploadedParts = new Set(
+        currentStatus.parts.filter((p: any) => p.etag).map((p: any) => p.part_number)
+      );
+
       const missingParts: number[] = [];
-      for (let i = 1; i <= totalPartsRef.current; i++) {
-        if (!uploadedPartsRef.current.has(i)) missingParts.push(i);
+      for (let i = 1; i <= totalParts; i++) {
+        if (!uploadStateRef.current.uploadedParts.has(i)) missingParts.push(i);
       }
 
       if (missingParts.length === 0) {
@@ -150,6 +168,7 @@ const UploadScreen: React.FC<Props> = ({ initData, uploadId: initialUploadId, on
         body: JSON.stringify({ uploadId, partNumbers: missingParts }),
       });
 
+      uploadStateRef.current.file = null; // Will prompt user to reselect file
       await uploadParts(partUrls);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to resume upload');
@@ -158,67 +177,110 @@ const UploadScreen: React.FC<Props> = ({ initData, uploadId: initialUploadId, on
   };
 
   const uploadParts = async (partUrls: PartUrl[]) => {
-    abortControllerRef.current = new AbortController();
-    const controller = abortControllerRef.current;
+    const state = uploadStateRef.current;
+    state.completing = false;
+    
+    // If we don't have the file, prompt user to select it
+    if (!state.file) {
+      const selectedFile = await promptForFile();
+      if (!selectedFile) {
+        setError('File selection cancelled');
+        setUploading(false);
+        return;
+      }
+      // Verify file size matches
+      const expectedSize = status?.upload.file_size;
+      if (expectedSize && selectedFile.size !== expectedSize) {
+        setError(`File size mismatch. Expected ${expectedSize} bytes, got ${selectedFile.size} bytes.`);
+        setUploading(false);
+        return;
+      }
+      state.file = selectedFile;
+    }
+
     const concurrency = 3;
     const queue = [...partUrls];
     const active = new Set<number>();
+    const results: Array<{ partNumber: number; etag: string; size: number }> = [];
+    let hasError = false;
+    let firstError: Error | null = null;
 
-    const uploadPart = async (partUrl: PartUrl) => {
-      const start = (partUrl.partNumber - 1) * chunkSizeRef.current;
-      const end = Math.min(start + chunkSizeRef.current, file!.size);
-      const blob = file!.slice(start, end);
+    const uploadPart = async (partUrl: PartUrl): Promise<{ partNumber: number; etag: string; size: number }> => {
+      if (hasError) throw new Error('Upload aborted due to previous error');
+      
+      const start = (partUrl.partNumber - 1) * state.chunkSize;
+      const end = Math.min(start + state.chunkSize, state.file!.size);
+      const blob = state.file!.slice(start, end);
 
       const response = await fetch(partUrl.url, {
         method: 'PUT',
         body: blob,
         headers: { 'Content-Type': 'application/octet-stream' },
-        signal: controller.signal,
       });
 
-      if (!response.ok) throw new Error(`Failed to upload part ${partUrl.partNumber}`);
+      if (!response.ok) throw new Error(`Failed to upload part ${partUrl.partNumber}: ${response.status}`);
       
       const etag = response.headers.get('ETag')?.replace(/"/g, '');
       if (!etag) throw new Error(`Missing ETag for part ${partUrl.partNumber}`);
 
+      // Persist ETag immediately
       await apiRequest('/api/upload/part-complete', {
         method: 'POST',
         body: JSON.stringify({ uploadId, partNumber: partUrl.partNumber, etag, size: blob.size }),
       });
 
-      uploadedPartsRef.current.add(partUrl.partNumber);
-      updateProgress();
-
-      if (queue.length > 0) {
-        await uploadPart(queue.shift()!);
-      } else if (active.size === 0 && uploadedPartsRef.current.size === totalPartsRef.current) {
-        await completeUpload();
-      }
+      return { partNumber: partUrl.partNumber, etag, size: blob.size };
     };
 
-    const startNext = async () => {
-      if (queue.length === 0) return;
-      const partUrl = queue.shift()!;
-      active.add(partUrl.partNumber);
-      try {
-        await uploadPart(partUrl);
-      } finally {
-        active.delete(partUrl.partNumber);
-        if (queue.length > 0) {
-          startNext();
+    const processQueue = async (): Promise<void> => {
+      while (queue.length > 0 && !hasError) {
+        const partUrl = queue.shift()!;
+        active.add(partUrl.partNumber);
+        
+        try {
+          const result = await uploadPart(partUrl);
+          results.push(result);
+          state.uploadedParts.add(partUrl.partNumber);
+          updateProgress();
+        } catch (e) {
+          hasError = true;
+          firstError = e instanceof Error ? e : new Error(String(e));
+          break;
+        } finally {
+          active.delete(partUrl.partNumber);
         }
       }
     };
 
-    for (let i = 0; i < Math.min(concurrency, queue.length); i++) {
-      startNext();
+    // Start initial workers
+    const workers = Array.from({ length: Math.min(concurrency, queue.length) }, () => processQueue());
+    await Promise.all(workers);
+
+    if (hasError) {
+      throw firstError!;
     }
+
+    // All parts uploaded successfully, now complete
+    await completeUpload();
+  };
+
+  const promptForFile = (): Promise<File | null> => {
+    return new Promise((resolve) => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'video/*';
+      input.onchange = (e) => {
+        resolve((e.target as HTMLInputElement).files?.[0] || null);
+      };
+      input.click();
+    });
   };
 
   const updateProgress = () => {
+    const state = uploadStateRef.current;
     if (!status) return;
     const uploaded = status.parts
-      .filter((p: any) => uploadedPartsRef.current.has(p.part_number))
+      .filter((p: any) => state.uploadedParts.has(p.part_number))
       .reduce((sum: number, p: any) => sum + (p.size || 0), 0);
     const percentage = Math.round((uploaded / status.upload.file_size) * 100);
     
@@ -229,6 +291,10 @@ const UploadScreen: React.FC<Props> = ({ initData, uploadId: initialUploadId, on
   };
 
   const completeUpload = async () => {
+    const state = uploadStateRef.current;
+    if (state.completing) return;
+    state.completing = true;
+    
     if (!uploadId) return;
     
     try {
@@ -242,6 +308,7 @@ const UploadScreen: React.FC<Props> = ({ initData, uploadId: initialUploadId, on
       const tg = window.Telegram?.WebApp;
       if (tg) tg.close();
     } catch (e) {
+      state.completing = false;
       setError(e instanceof Error ? e.message : 'Failed to complete upload');
       setUploading(false);
     }
@@ -260,7 +327,13 @@ const UploadScreen: React.FC<Props> = ({ initData, uploadId: initialUploadId, on
     setError('Upload cancelled');
     setUploading(false);
     setFile(null);
-    uploadedPartsRef.current.clear();
+    uploadStateRef.current = {
+      uploadedParts: new Set(),
+      totalParts: 0,
+      chunkSize: 0,
+      file: null,
+      completing: false,
+    };
   };
 
   const formatBytes = (bytes: number) => {

@@ -57,6 +57,7 @@ export class TelegramBot {
   private r2: R2Uploader;
   private botToken: string;
   private webhookSecret: string;
+  private workerSecret: string;
   private appOrigin: string;
   private maxUploadBytes: number;
   private chunkSize: number;
@@ -64,6 +65,7 @@ export class TelegramBot {
   constructor(env: Env) {
     this.botToken = env.TELEGRAM_BOT_TOKEN;
     this.webhookSecret = env.TELEGRAM_WEBHOOK_SECRET;
+    this.workerSecret = env.WORKER_SECRET;
     this.appOrigin = env.APP_ORIGIN;
     this.maxUploadBytes = parseInt(env.MAX_UPLOAD_BYTES || '2147483648', 10);
     this.chunkSize = parseInt(env.CHUNK_SIZE || '5242880', 10);
@@ -276,7 +278,7 @@ export class TelegramBot {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'Authorization': `Bearer ${this.webhookSecret}`,
+              'Authorization': `Bearer ${this.workerSecret}`,
             },
             body: JSON.stringify({
               uploadId: upload.id,
@@ -292,9 +294,6 @@ export class TelegramBot {
           
           const job = result.data!;
           
-          // Dispatch GitHub Actions workflow
-          await this.dispatchWorkflow(job.id, upload.id, userId);
-          
           return this.editMessage(chatId, messageId, `✅ <b>Processing Started</b>\n\nJob ID: <code>${job.id}</code>\nFile: <code>${upload.original_filename}</code>\n\nYou'll receive the clips when processing completes.`, {
             parse_mode: 'HTML',
             reply_markup: this.getMainKeyboard(),
@@ -305,13 +304,6 @@ export class TelegramBot {
     }
 
     return createApiResponse(true, { ok: true });
-  }
-
-  private async dispatchWorkflow(jobId: string, uploadId: string, userId: number): Promise<void> {
-    // This would dispatch the GitHub Actions workflow
-    // For now, we'll just log it. In production, this would call GitHub API.
-    console.log(`Would dispatch workflow for job ${jobId}, upload ${uploadId}, user ${userId}`);
-    // TODO: Implement actual GitHub API dispatch
   }
 
   private async handleJobAction(chatId: number, messageId: number, userId: number, action: string): Promise<ApiResponse> {

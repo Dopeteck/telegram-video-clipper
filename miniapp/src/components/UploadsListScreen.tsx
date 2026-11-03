@@ -13,16 +13,17 @@ interface Upload {
 type Screen = 'upload' | 'uploads' | 'settings' | 'help';
 
 interface Props {
+  apiBaseUrl: string;
   initData: string;
   onNavigate: (screen: Screen) => void;
 }
 
-const UploadsListScreen: React.FC<Props> = ({ initData, onNavigate }) => {
+const UploadsListScreen: React.FC<Props> = ({ apiBaseUrl, initData, onNavigate }) => {
   const [uploads, setUploads] = useState<Upload[]>([]);
   const [loading, setLoading] = useState(true);
 
   const apiRequest = useCallback(async (endpoint: string, options: RequestInit = {}) => {
-    const response = await fetch(endpoint, {
+    const response = await fetch(`${apiBaseUrl}${endpoint}`, {
       ...options,
       headers: {
         'Content-Type': 'application/json',
@@ -33,7 +34,7 @@ const UploadsListScreen: React.FC<Props> = ({ initData, onNavigate }) => {
     const data = await response.json();
     if (!data.ok) throw new Error(data.error || 'Request failed');
     return data.data;
-  }, [initData]);
+  }, [apiBaseUrl, initData]);
 
   const loadUploads = useCallback(async () => {
     try {

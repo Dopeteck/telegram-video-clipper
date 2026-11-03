@@ -16,16 +16,17 @@ interface Profile {
 }
 
 interface Props {
+  apiBaseUrl: string;
   initData: string;
   user: User;
 }
 
-const SettingsScreen: React.FC<Props> = ({ initData, user }) => {
+const SettingsScreen: React.FC<Props> = ({ apiBaseUrl, initData, user }) => {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
 
   const apiRequest = useCallback(async (endpoint: string, options: RequestInit = {}) => {
-    const response = await fetch(endpoint, {
+    const response = await fetch(`${apiBaseUrl}${endpoint}`, {
       ...options,
       headers: {
         'Content-Type': 'application/json',
@@ -36,7 +37,7 @@ const SettingsScreen: React.FC<Props> = ({ initData, user }) => {
     const data = await response.json();
     if (!data.ok) throw new Error(data.error || 'Request failed');
     return data.data;
-  }, [initData]);
+  }, [apiBaseUrl, initData]);
 
   useEffect(() => {
     loadProfile();

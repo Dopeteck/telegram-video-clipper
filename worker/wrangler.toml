@@ -28,7 +28,7 @@ bucket_name = "telegram-video-clipper-uploads"
 command = "npm run build"
 
 [triggers]
-crons = ["*/5 * * *"]
+crons = ["*/5 * * * *"]
 
 [observability]
 enabled = true

@@ -108,8 +108,13 @@ export class Database {
 
   async updateUploadPart(uploadId: string, partNumber: number, etag: string, size: number): Promise<void> {
     await this.db.prepare(`
-      UPDATE upload_parts SET etag = ?, size = ?, uploaded_at = ? WHERE upload_id = ? AND part_number = ?
-    `).bind(etag, size, Date.now(), uploadId, partNumber).run();
+      INSERT INTO upload_parts (upload_id, part_number, etag, size, uploaded_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(upload_id, part_number) DO UPDATE SET
+        etag = excluded.etag,
+        size = excluded.size,
+        uploaded_at = excluded.uploaded_at
+    `).bind(uploadId, partNumber, etag, size, Date.now()).run();
   }
 
   async getUploadParts(uploadId: string): Promise<UploadPart[]> {
