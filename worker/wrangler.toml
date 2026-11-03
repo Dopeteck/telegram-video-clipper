@@ -4,7 +4,7 @@ compatibility_date = "2024-01-15"
 compatibility_flags = ["nodejs_compat"]
 
 [vars]
-WORKER_URL = "https://telegram-video-clipper-worker.0eda14452e21855ab602d6c1058d19c3.workers.dev"
+WORKER_URL = "https://telegram-video-clipper-worker-production.adegunwa3.workers.dev"
 MINIAPP_URL = "https://telegram-video-clipper-miniapp.pages.dev"
 MAX_UPLOAD_BYTES = "2147483648"
 CHUNK_SIZE = "5242880"
