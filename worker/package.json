@@ -17,6 +17,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.500.0",
     "@aws-sdk/s3-request-presigner": "^3.500.0",
+    "@aws-sdk/xml-builder": "^3.972.42",
     "hono": "^4.0.0",
     "zod": "^3.22.0"
   },

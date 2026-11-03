@@ -33,3 +33,5 @@ crons = ["*/5 * * * *"]
 
 [observability]
 enabled = true
+[alias]
+"@aws-sdk/xml-builder" = "@aws-sdk/xml-builder/dist-cjs/index.js"
