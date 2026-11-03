@@ -1,6 +1,6 @@
 import { Env, PresignedUrlResponse, InitiateMultipartResponse, CompleteMultipartRequest } from './types';
 import { generateId } from './utils';
-import { S3Client, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand, AbortMultipartUploadCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand, AbortMultipartUploadCommand, HeadObjectCommand, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 export class R2Uploader {
@@ -131,6 +131,23 @@ export class R2Uploader {
       etag: response.ETag || '',
       size: headResponse.ContentLength || 0,
     };
+  }
+
+  async generateDownloadUrl(key: string, expiresIn = 900): Promise<string> {
+    const command = new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: key,
+    });
+    return getSignedUrl(this.client, command, { expiresIn });
+  }
+
+  async generateUploadUrl(key: string, contentType = 'video/mp4', expiresIn = 3600): Promise<string> {
+    const command = new PutObjectCommand({
+      Bucket: this.bucket,
+      Key: key,
+      ContentType: contentType,
+    });
+    return getSignedUrl(this.client, command, { expiresIn });
   }
 
   async abortMultipartUpload(key: string, uploadId: string): Promise<void> {

@@ -19,13 +19,8 @@ permissions:
   id-token: write
 
 env:
-  R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-  R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-  R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-  R2_BUCKET: telegram-video-clipper-uploads
   WORKER_URL: ${{ secrets.WORKER_URL }}
   WORKER_SECRET: ${{ secrets.WORKER_SECRET }}
-  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 # NOTE on step outputs: every `python` step below writes its step outputs
 # explicitly to the file named by $GITHUB_OUTPUT as `key=value` lines. Printing
@@ -67,7 +62,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
-          pip install boto3 requests
+          pip install requests
 
       - name: Report job started
         env:
@@ -91,31 +86,43 @@ jobs:
           response.raise_for_status()
           PY
 
-      - name: Download video from R2
+      - name: Download source video using Worker-signed URL
         id: download
         env:
-          OBJECT_KEY: ${{ github.event.client_payload.object_key }}
+          JOB_ID: ${{ github.event.client_payload.job_id }}
         run: |
           python - <<'PY'
           import os
-          import boto3
-          from botocore.config import Config
+          import requests
 
-          object_key = os.environ['OBJECT_KEY']
+          job_id = os.environ['JOB_ID']
+          worker_url = os.environ['WORKER_URL']
+          headers = {'Authorization': f"Bearer {os.environ['WORKER_SECRET']}"}
 
-          s3 = boto3.client(
-              's3',
-              endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
-              aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
-              aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
-              config=Config(signature_version='s3v4'),
-              region_name='auto',
+          signed_response = requests.get(
+              f'{worker_url}/api/internal/jobs/{job_id}/source-url',
+              headers=headers,
+              timeout=30,
           )
+          print(f'Worker source URL response: {signed_response.status_code}')
+          signed_response.raise_for_status()
+          source = signed_response.json()['data']
 
-          local_path = f'/tmp/{os.path.basename(object_key)}'
-          print(f'Downloading {object_key} to {local_path}')
-          s3.download_file(os.environ['R2_BUCKET'], object_key, local_path)
-          print(f'Downloaded {os.path.getsize(local_path)} bytes')
+          filename = os.path.basename(source.get('filename') or 'source-video.mp4')
+          local_path = f'/tmp/{filename}'
+          print(f'Downloading source video to {local_path}')
+
+          with requests.get(source['url'], stream=True, timeout=(30, 600)) as response:
+              response.raise_for_status()
+              with open(local_path, 'wb') as output:
+                  for chunk in response.iter_content(chunk_size=8 * 1024 * 1024):
+                      if chunk:
+                          output.write(chunk)
+
+          size = os.path.getsize(local_path)
+          if size == 0:
+              raise RuntimeError('Downloaded source video is empty')
+          print(f'Downloaded {size} bytes')
 
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
               out.write(f'video_path={local_path}\n')
@@ -206,7 +213,7 @@ jobs:
               out.write(f'clips={json.dumps(clips)}\n')
           PY
 
-      - name: Upload clips to R2
+      - name: Upload clips to R2 using Worker-signed URLs
         id: upload
         env:
           JOB_ID: ${{ github.event.client_payload.job_id }}
@@ -215,27 +222,47 @@ jobs:
           python - <<'PY'
           import os
           import json
-          import boto3
-          from botocore.config import Config
+          import requests
 
           clips = json.loads(os.environ.get('CLIPS_JSON') or '[]')
           job_id = os.environ['JOB_ID']
-
-          s3 = boto3.client(
-              's3',
-              endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
-              aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
-              aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
-              config=Config(signature_version='s3v4'),
-              region_name='auto',
-          )
+          worker_url = os.environ['WORKER_URL']
+          headers = {'Authorization': f"Bearer {os.environ['WORKER_SECRET']}"}
 
           uploaded = []
-          for clip in clips:
-              key = f'jobs/{job_id}/{os.path.basename(clip)}'
-              s3.upload_file(clip, os.environ['R2_BUCKET'], key)
-              uploaded.append(key)
-              print(f'Uploaded {clip} to {key}')
+          if clips:
+              filenames = [os.path.basename(clip) for clip in clips]
+              signed_response = requests.post(
+                  f'{worker_url}/api/internal/jobs/{job_id}/output-urls',
+                  headers={**headers, 'Content-Type': 'application/json'},
+                  json={'filenames': filenames},
+                  timeout=30,
+              )
+              print(f'Worker output URL response: {signed_response.status_code}')
+              signed_response.raise_for_status()
+              signed_uploads = signed_response.json()['data']['uploads']
+              urls_by_name = {item['filename']: item for item in signed_uploads}
+
+              for clip in clips:
+                  filename = os.path.basename(clip)
+                  target = urls_by_name.get(filename)
+                  if not target:
+                      raise RuntimeError(f'Worker did not return an upload URL for {filename}')
+
+                  size = os.path.getsize(clip)
+                  with open(clip, 'rb') as source:
+                      response = requests.put(
+                          target['url'],
+                          data=source,
+                          headers={
+                              'Content-Type': 'video/mp4',
+                              'Content-Length': str(size),
+                          },
+                          timeout=(30, 600),
+                      )
+                  response.raise_for_status()
+                  uploaded.append(target['key'])
+                  print(f'Uploaded {filename} ({size} bytes) to R2')
 
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
               out.write(f'uploaded={json.dumps(uploaded)}\n')

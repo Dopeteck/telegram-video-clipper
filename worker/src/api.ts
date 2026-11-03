@@ -455,6 +455,81 @@ internalApi.use('*', async (c, next) => {
   await next();
 });
 
+internalApi.get('/jobs/:jobId/source-url', async (c) => {
+  const jobId = c.req.param('jobId');
+  const db = new Database(c.env.DB, c.env);
+  const job = await db.getJob(jobId);
+
+  if (!job) {
+    return c.json(createApiResponse(false, undefined, 'Job not found'), 404);
+  }
+  if (job.status !== 'processing') {
+    return c.json(createApiResponse(false, undefined, 'Job is not processing'), 409);
+  }
+
+  const upload = await db.getUpload(job.upload_id);
+  if (!upload || upload.status !== 'uploaded') {
+    return c.json(createApiResponse(false, undefined, 'Source upload is not available'), 409);
+  }
+
+  const expiresIn = 900;
+  const r2 = new R2Uploader(c.env);
+  const url = await r2.generateDownloadUrl(upload.object_key, expiresIn);
+
+  return c.json(createApiResponse(true, {
+    url,
+    filename: upload.object_key.split('/').pop() || 'source-video.mp4',
+    expiresAt: Date.now() + expiresIn * 1000,
+  }));
+});
+
+internalApi.post('/jobs/:jobId/output-urls', async (c) => {
+  const jobId = c.req.param('jobId');
+  const db = new Database(c.env.DB, c.env);
+  const job = await db.getJob(jobId);
+
+  if (!job) {
+    return c.json(createApiResponse(false, undefined, 'Job not found'), 404);
+  }
+  if (job.status !== 'processing') {
+    return c.json(createApiResponse(false, undefined, 'Job is not processing'), 409);
+  }
+
+  let body: Record<string, unknown> | null;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json(createApiResponse(false, undefined, 'Invalid JSON body'), 400);
+  }
+
+  const filenames = body?.filenames;
+  const validFilename = /^[A-Za-z0-9][A-Za-z0-9._-]{0,180}\.mp4$/i;
+  if (
+    !Array.isArray(filenames) ||
+    filenames.length === 0 ||
+    filenames.length > 50 ||
+    !filenames.every((name) => typeof name === 'string' && validFilename.test(name)) ||
+    new Set(filenames).size !== filenames.length
+  ) {
+    return c.json(createApiResponse(false, undefined, 'filenames must contain 1-50 unique safe MP4 filenames'), 400);
+  }
+
+  const expiresIn = 3600;
+  const r2 = new R2Uploader(c.env);
+  const uploads = await Promise.all((filenames as string[]).map(async (filename) => {
+    const key = `jobs/${jobId}/${filename}`;
+    const url = await r2.generateUploadUrl(key, 'video/mp4', expiresIn);
+    return {
+      filename,
+      key,
+      url,
+      expiresAt: Date.now() + expiresIn * 1000,
+    };
+  }));
+
+  return c.json(createApiResponse(true, { uploads }));
+});
+
 internalApi.get('/jobs/:jobId', async (c) => {
   const jobId = c.req.param('jobId');
   const db = new Database(c.env.DB, c.env);

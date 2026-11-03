@@ -19,6 +19,12 @@ declare module '@aws-sdk/client-s3' {
   export class HeadObjectCommand {
     constructor(input: any);
   }
+  export class GetObjectCommand {
+    constructor(input: any);
+  }
+  export class PutObjectCommand {
+    constructor(input: any);
+  }
   export class DeleteObjectCommand {
     constructor(input: any);
   }
