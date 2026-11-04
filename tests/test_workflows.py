@@ -61,6 +61,15 @@ def test_process_video_uses_worker_download_url():
     assert "Download video from R2" not in step_names
 
 
+def test_process_video_requests_multiple_quality_clips_and_cjk_fonts():
+    steps = _steps()
+    install = next(s for s in steps if s["name"] == "Install system dependencies")
+    assert "fonts-noto-cjk" in install["run"]
+    run = next(s["run"] for s in steps if s["name"] == "Run Chopify processing")
+    assert "'--max-clips', '3'" in run
+    assert "'--min-score', '5.5'" in run
+
+
 def test_process_video_reads_the_fields_the_worker_actually_returns():
     run = next(s["run"] for s in _steps() if s["name"] == "Get job preferences")
     assert "caption_style" in run  # the jobs table has caption_style, not \`style\`

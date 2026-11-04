@@ -49,6 +49,16 @@ def test_render_playable_with_subtitles_and_brand(source, tmp_path, layout, prev
         assert out.with_suffix(".meta.json").is_file()
 
 
+def test_cjk_captions_select_unicode_font(tmp_path):
+    output = tmp_path / "cjk.ass"
+    words = [{"word": "こんにちは", "start": 0.0, "end": 0.8},
+             {"word": "世界", "start": 0.9, "end": 1.5}]
+    render_clips.build_ass(words, 0, 2, output, 1080, 1920, 96, 300)
+    ass = output.read_text(encoding="utf-8")
+    assert "Noto Sans CJK JP" in ass
+    assert "こんにちは" in ass and "世界" in ass
+
+
 def test_brand_colors_appear_in_ass(tmp_path):
     output = tmp_path / "cap.ass"
     preset = tmp_path / "brand.json"

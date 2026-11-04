@@ -65,6 +65,7 @@ def get_style(name):
     return CAPTION_STYLES[name]
 
 WORDS_PER_LINE = 3
+CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]")
 DET_FPS = 5
 DET_W = 640
 EMA_ALPHA = 0.20
@@ -276,6 +277,11 @@ def build_ass(words, clip_start, clip_end, path, tw, th, font_size, margin_v,
         font_size = max(12, round(brand["font_size"] * th / 1080))
         margin_v = round(brand["margin"] * th / 1080)
     sub = [w for w in words if w["end"] > clip_start and w["start"] < clip_end]
+    # Arial Black and many user-selected Latin fonts lack Japanese/CJK glyphs.
+    # Use the Noto CJK family for the whole caption track when any such glyph
+    # occurs; Latin text remains covered by the same family.
+    if any(CJK_RE.search(str(w.get("word", ""))) for w in sub):
+        st["font"] = "Noto Sans CJK JP"
     header = (
         "[Script Info]\nScriptType: v4.00+\n"
         f"PlayResX: {tw}\nPlayResY: {th}\nWrapStyle: 2\nScaledBorderAndShadow: yes\n\n"
