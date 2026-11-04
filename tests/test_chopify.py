@@ -128,7 +128,7 @@ class TestNearest:
 
 class TestRun:
     def test_run_writes_segments(self, workdir):
-        segs, mode = score_clips.run(workdir)
+        segs, mode = score_clips.run(workdir, min_score=0)
         assert mode == "heuristic"
         assert (workdir / "segments.json").exists()
         on_disk = json.loads((workdir / "segments.json").read_text())
@@ -136,7 +136,7 @@ class TestRun:
 
     def test_ollama_fallback_on_dead_server(self, workdir):
         segs, mode = score_clips.run(workdir, llm="qwen2.5:7b",
-                                     host="http://127.0.0.1:1", max_clips=3)
+                                     host="http://127.0.0.1:1", max_clips=3, min_score=0)
         assert mode == "heuristic"       # graceful fallback, no crash
         assert len(segs) >= 1
 
@@ -147,7 +147,7 @@ class TestRun:
     def test_bom_transcript_accepted(self, workdir):
         raw = (workdir / "transcript.json").read_bytes()
         (workdir / "transcript.json").write_bytes(b"\xef\xbb\xbf" + raw)
-        segs, _ = score_clips.run(workdir)
+        segs, _ = score_clips.run(workdir, min_score=0)
         assert len(segs) >= 1
 
 
@@ -394,7 +394,7 @@ class TestPick:
             score_clips.pick_segments([seg(0, 5, "a")], "x")
 
     def test_run_pick_selects_one(self, workdir):
-        segs, _ = score_clips.run(workdir, min_len=4, max_len=20, pick="1")
+        segs, _ = score_clips.run(workdir, min_len=4, max_len=20, pick="1", min_score=0)
         assert len(segs) == 1
 
     def test_run_pick_out_of_range_exits(self, workdir):
