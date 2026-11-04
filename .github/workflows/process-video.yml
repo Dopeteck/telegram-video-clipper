@@ -228,8 +228,11 @@ jobs:
           python - <<'PY'
           import os
           import json
+          import time
+          import random
           import boto3
           from botocore.config import Config
+          from botocore.exceptions import ClientError, BotoCoreError
 
           clips = json.loads(os.environ.get('CLIPS_JSON') or '[]')
           job_id = os.environ['JOB_ID']
@@ -244,16 +247,40 @@ jobs:
               endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
               aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
               aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
-              config=Config(signature_version='s3v4'),
+              config=Config(
+                  signature_version='s3v4',
+                  connect_timeout=20,
+                  read_timeout=120,
+                  retries={'mode': 'standard', 'total_max_attempts': 3},
+              ),
               region_name='auto',
           )
 
           uploaded = []
+          transient_codes = {
+              'InternalError', 'InternalServerError', 'ServiceUnavailable',
+              'SlowDown', 'RequestTimeout', 'RequestTimeoutException',
+          }
           for clip in clips:
               key = f'jobs/{job_id}/{os.path.basename(clip)}'
-              s3.upload_file(clip, os.environ['R2_BUCKET'], key)
-              uploaded.append(key)
-              print(f'Uploaded {clip} to {key}')
+              for attempt in range(1, 6):
+                  try:
+                      s3.upload_file(clip, os.environ['R2_BUCKET'], key)
+                      uploaded.append(key)
+                      print(f'Uploaded {clip} to {key}')
+                      break
+                  except (ClientError, BotoCoreError) as exc:
+                      response = getattr(exc, 'response', {}) or {}
+                      error = response.get('Error', {}) or {}
+                      code = str(error.get('Code', ''))
+                      status = int((response.get('ResponseMetadata', {}) or {}).get('HTTPStatusCode', 0) or 0)
+                      retryable = code in transient_codes or status >= 500 or isinstance(exc, BotoCoreError)
+                      if not retryable or attempt == 5:
+                          print(f'Upload failed for {key} after {attempt} attempt(s): {code or type(exc).__name__}; HTTP {status}')
+                          raise
+                      delay = min(30, 2 ** (attempt - 1)) + random.uniform(0, 1)
+                      print(f'Transient R2 upload error for {key} (attempt {attempt}/5, {code or status}); retrying in {delay:.1f}s')
+                      time.sleep(delay)
 
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
               out.write(f'uploaded={json.dumps(uploaded)}\n')
