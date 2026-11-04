@@ -212,7 +212,14 @@ def build_candidates(sentences, min_len, max_len, max_clips, av_features=None):
     """Seed windows at the highest-scoring sentences, grow to min_len, dedup, sort.
     Windows always end on a complete sentence (complete-thought rule)."""
     scored = {i: score_sentence(s)[1] for i, s in enumerate(sentences)}
-    order = sorted(range(len(sentences)), key=lambda i: scored[i], reverse=True)
+    ranked_seeds = sorted(range(len(sentences)), key=lambda i: scored[i], reverse=True)
+    # Keep strong dialogue seeds, but also sample the full timeline so quiet
+    # lyrics or visually driven sequences can enter the AV shortlist.
+    temporal_count = max(1, max_clips * 5)
+    stride = max(1, len(sentences) // temporal_count)
+    temporal_seeds = list(range(0, len(sentences), stride))
+    priority_seeds = ranked_seeds[:max(1, max_clips * 3)]
+    order = list(dict.fromkeys(priority_seeds + temporal_seeds))
     taken = [False] * len(sentences)
     accepted = []
 
@@ -434,8 +441,19 @@ def run(workdir, llm=None, host=OLLAMA_HOST, min_score=None, max_clips=10,
         # passage is not excluded merely because its lyrics score weakly.
         candidates = build_candidates(sentences, min_len, max_len,
                                       max(max_clips * 8, max_clips), av_features)
-        ranked = sorted(candidates, key=lambda s: s["overall"], reverse=True)
-        qualifying = [s for s in ranked if s["overall"] >= ms][:max_clips]
+        ranked = sorted((s for s in candidates if s["overall"] >= ms),
+                        key=lambda s: s["overall"], reverse=True)
+        # Avoid returning three neighbouring snippets from one sequence when
+        # strong alternatives exist elsewhere in the source.
+        qualifying = []
+        separation = max(30.0, max_len * 1.5)
+        for candidate in ranked:
+            if all(candidate["end"] <= chosen["start"] - separation or
+                   candidate["start"] >= chosen["end"] + separation
+                   for chosen in qualifying):
+                qualifying.append(candidate)
+            if len(qualifying) >= max_clips:
+                break
         segments = sorted(qualifying, key=lambda s: s["start"])
         print(f"Quality gate: {len(segments)}/{max_clips} candidates met "
               f"the minimum score of {ms:.1f}/10; no below-threshold fillers.", flush=True)
