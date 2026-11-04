@@ -125,17 +125,31 @@ const UploadsListScreen: React.FC<Props> = ({ apiBaseUrl, initData, onNavigate }
       delete next[jobId];
       return next;
     });
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 20000);
     try {
-      const result = await fetchJobDownloads(apiBaseUrl, initData, jobId);
+      const result = await fetchJobDownloads(apiBaseUrl, initData, jobId, controller.signal);
       const clip = result.clips?.[clipIndex];
       if (!clip?.url) throw new Error('Download link is not available for this clip');
-      // Navigate to the short-lived R2 URL; it is signed for attachment download.
-      window.location.assign(clip.url);
+
+      // Telegram WebViews can block top-level navigation to a cross-origin
+      // attachment URL. openLink hands the signed R2 URL to Telegram's external
+      // browser instead; normal browsers retain the direct-navigation fallback.
+      const telegram = window.Telegram?.WebApp;
+      if (telegram?.openLink) {
+        telegram.openLink(clip.url);
+      } else {
+        window.location.assign(clip.url);
+      }
     } catch (e) {
-      setDownloadErrors(prev => ({
-        ...prev,
-        [jobId]: e instanceof Error ? e.message : 'Failed to create download link',
-      }));
+      const message = e instanceof Error && e.name === 'AbortError'
+        ? 'The download link request timed out. Please try again.'
+        : e instanceof Error ? e.message : 'Failed to create download link';
+      setDownloadErrors(prev => ({ ...prev, [jobId]: message }));
+    } finally {
+      window.clearTimeout(timeout);
+      // Do not leave the button permanently in "Preparing download" after
+      // handing the URL to Telegram/the browser.
       setDownloadingClip(null);
     }
   };
