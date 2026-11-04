@@ -251,7 +251,7 @@ jobs:
                   signature_version='s3v4',
                   connect_timeout=20,
                   read_timeout=120,
-                  retries={'mode': 'standard', 'total_max_attempts': 10},
+                  retries={'mode': 'standard', 'total_max_attempts': 3},
               ),
               region_name='auto',
           )
