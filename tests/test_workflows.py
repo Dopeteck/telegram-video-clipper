@@ -113,3 +113,13 @@ def test_completion_status_does_not_depend_on_boolean_string_case():
     env = step["env"]
     assert "steps.chopify.outcome" in env["CHOPIFY_OUTCOME"]
     assert "== 'True'" not in step["run"]
+
+def test_process_video_installs_boto3_for_r2_clip_uploads():
+    install_step = next(
+        s for s in _steps() if s["name"] == "Install Python dependencies"
+    )
+    assert re.search(r"\\bpip install\\b[^\\n]*\\bboto3\\b", install_step["run"])
+
+    upload_step = next(s for s in _steps() if s["name"] == "Upload clips to R2")
+    assert "import boto3" in upload_step["run"]
+    assert "from botocore.config import Config" in upload_step["run"]
