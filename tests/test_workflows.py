@@ -47,7 +47,7 @@ def test_process_video_never_pipes_stdout_into_github_output():
 def test_process_video_python_steps_compile():
     seen = 0
     for step in _steps():
-        match = re.search(r"python - <<'PY'\n(.*?)\n\s*PY\s*$", step.get("run", ""), re.S)
+        match = re.search(r"python - <<'PY'\\n(.*?)\\n\\s*PY\\s*$", step.get("run", ""), re.S)
         if match:
             compile(match.group(1), step["name"], "exec")
             seen += 1
@@ -76,14 +76,14 @@ def test_completion_status_does_not_depend_on_boolean_string_case():
 def test_process_video_no_longer_uses_boto3_for_download():
     for step in _steps():
         run = step.get("run", "")
-        # Should not import boto3 for download
-        assert "boto3" not in run or "upload" in step["name"].lower()
-        # Should not use R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY for download
-        if "download" in step["name"].lower() and "upload" not in step["name"].lower():
-            assert "R2_ACCESS_KEY_ID" not in run
-            assert "R2_SECRET_ACCESS_KEY" not in run
-            assert "boto3.client" not in run
-            assert "download_file" not in run
+        # boto3 may be installed as a dependency, but must not be used for download.
+        if "download" not in step["name"].lower():
+            continue
+        assert "boto3" not in run
+        assert "R2_ACCESS_KEY_ID" not in run
+        assert "R2_SECRET_ACCESS_KEY" not in run
+        assert "boto3.client" not in run
+        assert "download_file" not in run
 
 
 def test_process_video_downloads_via_http_streaming():
@@ -102,23 +102,16 @@ def test_process_video_gets_download_url_from_worker():
     assert "/download-url" in run
     assert "download_url=" not in run  # URL is internal to the step, not a step output
     # The presigned URL variable must never be passed to print()
-    import re
-    print_calls = re.findall(r'print\((.*)\)', run)
+    print_calls = re.findall(r'print\\((.*)\\)', run)
     for call in print_calls:
         assert 'download_url' not in call, f"Presigned URL leaked to print(): {call}"
 
-
-def test_completion_status_does_not_depend_on_boolean_string_case():
-    step = next(s for s in _steps() if s["name"] == "Report completion to Worker")
-    env = step["env"]
-    assert "steps.chopify.outcome" in env["CHOPIFY_OUTCOME"]
-    assert "== 'True'" not in step["run"]
 
 def test_process_video_installs_boto3_for_r2_clip_uploads():
     install_step = next(
         s for s in _steps() if s["name"] == "Install Python dependencies"
     )
-    assert re.search(r"\bpip install\b[^\n]*\bboto3\b", install_step["run"])
+    assert re.search(r"\\bpip install\\b[^\\n]*\\bboto3\\b", install_step["run"])
 
     upload_step = next(s for s in _steps() if s["name"] == "Upload clips to R2")
     assert "import boto3" in upload_step["run"]
