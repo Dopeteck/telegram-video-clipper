@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { startProcessing, fetchJob, fetchJobs, latestJobByUpload, isTerminalStatus, Job } from './jobs';
+import { startProcessing, fetchJob, fetchJobs, fetchJobDownloads, latestJobByUpload, isTerminalStatus, Job } from './jobs';
 
 const BASE = 'https://worker.example';
 const INIT = 'query_id=AAA&user=%7B%22id%22%3A42%7D&auth_date=1&hash=abc';
@@ -56,6 +56,22 @@ describe('Process Video request (regression: Mini App called the private interna
       ok: false, status: 404, headers: { get: () => 'text/html' }, text: async () => '<html>Not found</html>',
     });
     await expect(startProcessing(BASE, INIT, 'upload_1')).rejects.toThrow('Server error (404)');
+  });
+});
+
+describe('clip download links', () => {
+  it('requests the authenticated downloads endpoint and passes through an abort signal', async () => {
+    const controller = new AbortController();
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      ok: true,
+      data: { clips: [{ filename: 'clip.mp4', url: 'https://r2.example/clip', expiresAt: 123 } ] },
+    }));
+    const result = await fetchJobDownloads(BASE, INIT, 'job_42', controller.signal);
+    expect(result.clips[0].url).toBe('https://r2.example/clip');
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${BASE}/api/jobs/job_42/downloads`);
+    expect(init.headers.Authorization).toBe(`Bearer ${INIT}`);
+    expect(init.signal).toBe(controller.signal);
   });
 });
 
