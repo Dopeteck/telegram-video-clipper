@@ -674,6 +674,11 @@ export interface CompleteMultipartRequest {
   parts: { partNumber: number; etag: string }[];
 }
 
+export interface PresignedGetObjectResponse {
+  url: string;
+  expiresAt: number;
+}
+
 export interface ApiResponse<T = unknown> {
   ok: boolean;
   data?: T;

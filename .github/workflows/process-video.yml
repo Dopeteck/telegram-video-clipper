@@ -19,10 +19,6 @@ permissions:
   id-token: write
 
 env:
-  R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-  R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-  R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-  R2_BUCKET: telegram-video-clipper-uploads
   WORKER_URL: ${{ secrets.WORKER_URL }}
   WORKER_SECRET: ${{ secrets.WORKER_SECRET }}
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -67,7 +63,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
-          pip install boto3 requests
+          pip install requests
 
       - name: Report job started
         env:
@@ -91,31 +87,53 @@ jobs:
           response.raise_for_status()
           PY
 
-      - name: Download video from R2
-        id: download
+      - name: Get download URL from Worker
+        id: download_url
         env:
-          OBJECT_KEY: ${{ github.event.client_payload.object_key }}
+          JOB_ID: ${{ github.event.client_payload.job_id }}
         run: |
           python - <<'PY'
           import os
-          import boto3
-          from botocore.config import Config
+          import requests
 
-          object_key = os.environ['OBJECT_KEY']
-
-          s3 = boto3.client(
-              's3',
-              endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
-              aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
-              aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
-              config=Config(signature_version='s3v4'),
-              region_name='auto',
+          job_id = os.environ['JOB_ID']
+          response = requests.get(
+              f"{os.environ['WORKER_URL']}/api/internal/jobs/{job_id}/download-url",
+              headers={'Authorization': f"Bearer {os.environ['WORKER_SECRET']}"},
+              timeout=30,
           )
+          response.raise_for_status()
+          data = response.json()['data']
+          print(f'Got presigned URL, expires at: {data["expiresAt"]}')
 
-          local_path = f'/tmp/{os.path.basename(object_key)}'
-          print(f'Downloading {object_key} to {local_path}')
-          s3.download_file(os.environ['R2_BUCKET'], object_key, local_path)
-          print(f'Downloaded {os.path.getsize(local_path)} bytes')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f'download_url={data["url"]}\n')
+              out.write(f'expires_at={data["expiresAt"]}\n')
+          PY
+
+      - name: Download video from presigned URL
+        id: download
+        env:
+          DOWNLOAD_URL: ${{ steps.download_url.outputs.download_url }}
+        run: |
+          python - <<'PY'
+          import os
+          import requests
+
+          download_url = os.environ['DOWNLOAD_URL']
+          local_path = f'/tmp/video_{os.environ["GITHUB_RUN_ID"]}.mp4'
+
+          print(f'Downloading from presigned URL...')
+          with requests.get(download_url, stream=True, timeout=300) as r:
+              r.raise_for_status()
+              with open(local_path, 'wb') as f:
+                  for chunk in r.iter_content(chunk_size=8192):
+                      f.write(chunk)
+
+          size = os.path.getsize(local_path)
+          print(f'Downloaded {size} bytes to {local_path}')
+          if size == 0:
+              raise RuntimeError('Downloaded file is empty')
 
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
               out.write(f'video_path={local_path}\n')

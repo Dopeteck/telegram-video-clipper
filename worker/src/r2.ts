@@ -1,7 +1,30 @@
-import { Env, PresignedUrlResponse, InitiateMultipartResponse, CompleteMultipartRequest } from './types';
+import { Env, PresignedUrlResponse, InitiateMultipartResponse, CompleteMultipartRequest, PresignedGetObjectResponse } from './types';
 import { generateId } from './utils';
 import { S3Client, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand, AbortMultipartUploadCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+
+// GetObjectCommand exists at runtime but not in @aws-sdk/client-s3 types.
+// We declare it locally and use a type-safe wrapper.
+interface GetObjectCommandInput {
+  Bucket: string;
+  Key: string;
+  // Other optional fields omitted for brevity
+}
+
+interface GetObjectCommandClass {
+  new (input: GetObjectCommandInput): { input: GetObjectCommandInput };
+}
+
+const GetObjectCommand = (globalThis as any).GetObjectCommandShim || (() => {
+  // At runtime, the AWS SDK v3 provides GetObjectCommand on the main export
+  const clientS3 = require('@aws-sdk/client-s3');
+  return clientS3.GetObjectCommand;
+})() as GetObjectCommandClass;
+
+// Store for hot module replacement in development
+if (typeof globalThis !== 'undefined') {
+  (globalThis as any).GetObjectCommandShim = GetObjectCommand;
+}
 
 export class R2Uploader {
   private client: S3Client;
@@ -169,5 +192,19 @@ export class R2Uploader {
       Key: key,
     });
     await this.client.send(command);
+  }
+
+  async generatePresignedGetObjectUrl(key: string, expiresIn = 900): Promise<PresignedGetObjectResponse> {
+    const command = new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: key,
+    });
+
+    const url = await getSignedUrl(this.client, command, { expiresIn });
+
+    return {
+      url,
+      expiresAt: Date.now() + expiresIn * 1000,
+    };
   }
 }

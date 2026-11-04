@@ -7,6 +7,18 @@ const store = vi.hoisted(() => ({
   jobs: new Map<string, any>(),
 }));
 
+vi.mock('../src/r2', () => {
+  class R2Uploader {
+    async generatePresignedGetObjectUrl(key: string, expiresIn = 900) {
+      return {
+        url: `https://example.com/signed-url?key=${encodeURIComponent(key)}&expires=${expiresIn}`,
+        expiresAt: Date.now() + expiresIn * 1000,
+      };
+    }
+  }
+  return { R2Uploader };
+});
+
 vi.mock('../src/db', () => {
   class Database {
     constructor(_db?: unknown, _env?: unknown) {}
@@ -339,5 +351,91 @@ describe('internal routes stay protected and keep working for the workflow', () 
     expect((await internal(`/api/internal/jobs/${id}/complete`, 'POST', { clips: [], status: 'pending' })).status).toBe(400);
     await internal(`/api/internal/jobs/${id}/complete`, 'POST', { clips: [], status: 'processing', github_run_url: 'https://evil.example/x' });
     expect(store.jobs.get(id).github_run_url).toBe('https://github.com/Dopeteck/telegram-video-clipper/actions');
+  });
+});
+
+describe('internal download URL endpoint', () => {
+  const internal = (path: string, method = 'GET', body?: unknown, token: string | null = WORKER_SECRET, env = baseEnv()) =>
+    call(path, {
+      method,
+      headers: { 'Content-Type': 'application/json', ...(token === null ? {} : { Authorization: `Bearer ${token}` }) },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }, env);
+
+  it('rejects missing, wrong and empty secrets', async () => {
+    seedUpload('upload_1', ALICE);
+    const created = await (await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_1' })).json() as any;
+    expect((await internal(`/api/internal/jobs/${created.data.id}/download-url`, 'GET', undefined, null)).status).toBe(401);
+    expect((await internal(`/api/internal/jobs/${created.data.id}/download-url`, 'GET', undefined, 'wrong')).status).toBe(401);
+    expect((await internal(`/api/internal/jobs/${created.data.id}/download-url`, 'GET', undefined, '', baseEnv({ WORKER_SECRET: '' }))).status).toBe(401);
+  });
+
+  it('returns 404 for unknown job', async () => {
+    const res = await internal('/api/internal/jobs/nonexistent/download-url');
+    expect(res.status).toBe(404);
+    expect((await res.json() as any).error).toBe('Job not found');
+  });
+
+  it('returns 404 when job has no associated upload', async () => {
+    // Create a job directly in store without an upload
+    const jobId = 'job_test_123';
+    store.jobs.set(jobId, {
+      id: jobId,
+      upload_id: 'nonexistent_upload',
+      telegram_user_id: ALICE,
+      status: 'queued',
+    });
+    const res = await internal(`/api/internal/jobs/${jobId}/download-url`);
+    expect(res.status).toBe(404);
+    expect((await res.json() as any).error).toBe('Associated upload not found');
+  });
+
+  it('rejects when upload ownership does not match job', async () => {
+    seedUpload('upload_bob', BOB);
+    const created = await (await asUser(BOB, '/api/jobs', 'POST', { uploadId: 'upload_bob' })).json() as any;
+    // Manually change job's user to Alice to create mismatch
+    store.jobs.get(created.data.id)!.telegram_user_id = ALICE;
+    const res = await internal(`/api/internal/jobs/${created.data.id}/download-url`);
+    expect(res.status).toBe(403);
+    expect((await res.json() as any).error).toBe('Upload ownership mismatch');
+  });
+
+  it('rejects when upload is not in uploaded status', async () => {
+    seedUpload('upload_1', ALICE, 'uploading');
+    // Create job directly in store since API rejects it
+    const jobId = 'job_test_123';
+    store.jobs.set(jobId, {
+      id: jobId,
+      upload_id: 'upload_1',
+      telegram_user_id: ALICE,
+      status: 'queued',
+    });
+    const res = await internal(`/api/internal/jobs/${jobId}/download-url`);
+    expect(res.status).toBe(409);
+    expect((await res.json() as any).error).toContain('not ready for download');
+  });
+
+  it('returns a presigned download URL for valid job', async () => {
+    seedUpload('upload_1', ALICE);
+    const created = await (await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_1' })).json() as any;
+    const res = await internal(`/api/internal/jobs/${created.data.id}/download-url`);
+    expect(res.status).toBe(200);
+    const json = await res.json() as any;
+    expect(json.ok).toBe(true);
+    expect(json.data.url).toBeTruthy();
+    expect(json.data.expiresAt).toBeTypeOf('number');
+    expect(json.data.expiresAt).toBeGreaterThan(Date.now());
+  });
+
+  it('URL is generated for the exact database object key', async () => {
+    const customKey = 'uploads/1001/custom_video.mp4';
+    seedUpload('upload_1', ALICE);
+    // Override the object key
+    store.uploads.get('upload_1')!.object_key = customKey;
+    const created = await (await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_1' })).json() as any;
+    const res = await internal(`/api/internal/jobs/${created.data.id}/download-url`);
+    expect(res.status).toBe(200);
+    const json = await res.json() as any;
+    expect(json.data.url).toContain(encodeURIComponent(customKey));
   });
 });
