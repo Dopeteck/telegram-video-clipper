@@ -183,7 +183,7 @@ def run_project(path, action="all", preview=False, pick=None, resume=True, progr
                                                 "min_score", "min_len", "max_len", "max_clips")}
             score_key = digest([transcript_key, data, selection])
             if not resume or state["cache"].get("score") != score_key or not (path / "segments.json").exists():
-                score_clips.run(path, **selection)
+                score_clips.run(path, **selection, video_path=source)
                 state["cache"]["score"] = score_key
                 save_project(path, state)
         if action == "prepare":
