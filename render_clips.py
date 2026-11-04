@@ -65,7 +65,7 @@ def get_style(name):
     return CAPTION_STYLES[name]
 
 WORDS_PER_LINE = 3
-CJK_RE = re.compile(r"[\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff\\uac00-\\ud7af]")
+CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]")
 DET_FPS = 5
 DET_W = 640
 EMA_ALPHA = 0.20
