@@ -87,8 +87,8 @@ jobs:
           response.raise_for_status()
           PY
 
-      - name: Get download URL from Worker
-        id: download_url
+      - name: Download video via Worker presigned URL
+        id: download
         env:
           JOB_ID: ${{ github.event.client_payload.job_id }}
         run: |
@@ -97,33 +97,22 @@ jobs:
           import requests
 
           job_id = os.environ['JOB_ID']
-          response = requests.get(
-              f"{os.environ['WORKER_URL']}/api/internal/jobs/{job_id}/download-url",
-              headers={'Authorization': f"Bearer {os.environ['WORKER_SECRET']}"},
-              timeout=30,
-          )
-          response.raise_for_status()
-          data = response.json()['data']
-          print(f'Got presigned URL, expires at: {data["expiresAt"]}')
-
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
-              out.write(f'download_url={data["url"]}\n')
-              out.write(f'expires_at={data["expiresAt"]}\n')
-          PY
-
-      - name: Download video from presigned URL
-        id: download
-        env:
-          DOWNLOAD_URL: ${{ steps.download_url.outputs.download_url }}
-        run: |
-          python - <<'PY'
-          import os
-          import requests
-
-          download_url = os.environ['DOWNLOAD_URL']
+          worker_url = os.environ['WORKER_URL']
+          worker_secret = os.environ['WORKER_SECRET']
           local_path = f'/tmp/video_{os.environ["GITHUB_RUN_ID"]}.mp4'
 
-          print(f'Downloading from presigned URL...')
+          # Fetch short-lived presigned download URL from Worker
+          resp = requests.get(
+              f'{worker_url}/api/internal/jobs/{job_id}/download-url',
+              headers={'Authorization': f'Bearer {worker_secret}'},
+              timeout=30,
+          )
+          resp.raise_for_status()
+          data = resp.json()['data']
+          download_url = data['url']
+
+          # Download video via HTTP streaming (presigned URL never logged)
+          print(f'Downloading video from Worker presigned URL...')
           with requests.get(download_url, stream=True, timeout=300) as r:
               r.raise_for_status()
               with open(local_path, 'wb') as f:

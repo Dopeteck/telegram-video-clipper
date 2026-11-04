@@ -56,8 +56,7 @@ def test_process_video_python_steps_compile():
 
 def test_process_video_uses_worker_download_url():
     step_names = [s["name"] for s in _steps()]
-    assert "Get download URL from Worker" in step_names
-    assert "Download video from presigned URL" in step_names
+    assert "Download video via Worker presigned URL" in step_names
     # Old boto3 download step should be gone
     assert "Download video from R2" not in step_names
 
@@ -88,7 +87,7 @@ def test_process_video_no_longer_uses_boto3_for_download():
 
 
 def test_process_video_downloads_via_http_streaming():
-    step = next(s for s in _steps() if s["name"] == "Download video from presigned URL")
+    step = next(s for s in _steps() if s["name"] == "Download video via Worker presigned URL")
     run = step["run"]
     assert "requests.get" in run
     assert "stream=True" in run
@@ -97,12 +96,16 @@ def test_process_video_downloads_via_http_streaming():
 
 
 def test_process_video_gets_download_url_from_worker():
-    step = next(s for s in _steps() if s["name"] == "Get download URL from Worker")
+    step = next(s for s in _steps() if s["name"] == "Download video via Worker presigned URL")
     run = step["run"]
     assert "/api/internal/jobs/" in run
     assert "/download-url" in run
-    assert "download_url=" in run
-    assert "expires_at=" in run
+    assert "download_url=" not in run  # URL is internal to the step, not a step output
+    # The presigned URL variable must never be passed to print()
+    import re
+    print_calls = re.findall(r'print\((.*)\)', run)
+    for call in print_calls:
+        assert 'download_url' not in call, f"Presigned URL leaked to print(): {call}"
 
 
 def test_completion_status_does_not_depend_on_boolean_string_case():

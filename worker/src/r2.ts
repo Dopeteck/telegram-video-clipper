@@ -3,27 +3,6 @@ import { generateId } from './utils';
 import { S3Client, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand, AbortMultipartUploadCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
-// GetObjectCommand exists at runtime on the main export but is not exported in types.
-// Use a type-safe wrapper with dynamic import at module initialization.
-interface GetObjectCommandInput {
-  Bucket: string;
-  Key: string;
-}
-
-interface GetObjectCommandClass {
-  new (input: GetObjectCommandInput): { input: GetObjectCommandInput };
-}
-
-let GetObjectCommandClass: GetObjectCommandClass;
-
-// Load the command class once at module initialization
-const clientS3Module = await import('@aws-sdk/client-s3');
-const clientS3Exports = clientS3Module as unknown as { GetObjectCommand?: new (input: { Bucket: string; Key: string }) => { input: { Bucket: string; Key: string } } };
-GetObjectCommandClass = (clientS3Exports.GetObjectCommand ?? class {
-  input: { Bucket: string; Key: string };
-  constructor(input: { Bucket: string; Key: string }) { this.input = input; }
-}) as unknown as { new (input: { Bucket: string; Key: string }): { input: { Bucket: string; Key: string } } };
-
 export class R2Uploader {
   private client: S3Client;
   private bucket: string;
@@ -193,7 +172,12 @@ export class R2Uploader {
   }
 
   async generatePresignedGetObjectUrl(key: string, expiresIn = 900): Promise<PresignedGetObjectResponse> {
-    const command = new GetObjectCommandClass({
+    const clientS3Module = await import('@aws-sdk/client-s3');
+    const { GetObjectCommand } = clientS3Module as unknown as { GetObjectCommand: new (input: { Bucket: string; Key: string }) => { input: { Bucket: string; Key: string } } };
+    if (!GetObjectCommand) {
+      throw new Error('@aws-sdk/client-s3 does not export GetObjectCommand');
+    }
+    const command = new GetObjectCommand({
       Bucket: this.bucket,
       Key: key,
     });
