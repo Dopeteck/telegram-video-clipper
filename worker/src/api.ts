@@ -446,7 +446,22 @@ api.get('/jobs/:jobId/downloads', async (c) => {
     console.error(`Invalid clips_json for job ${job.id}`);
     return c.json(createApiResponse(false, undefined, 'Clip metadata is invalid'), 500);
   }
-  if (!Array.isArray(clipKeys) || clipKeys.length === 0) {
+  if (!Array.isArray(clipKeys)) {
+    return c.json(createApiResponse(false, undefined, 'Clip metadata is invalid'), 500);
+  }
+
+  // Backfill jobs completed before clips_json was introduced. The workflow stores
+  // outputs under this job-specific prefix, so this cannot expose another user's files.
+  if (clipKeys.length === 0) {
+    const listed = await c.env.R2_BUCKET.list({ prefix: `jobs/${job.id}/`, limit: 20 });
+    clipKeys = listed.objects
+      .map(object => object.key)
+      .filter(key => key.startsWith(`jobs/${job.id}/`) && key.split('/').length === 3 && key.toLowerCase().endsWith('.mp4'));
+    if (clipKeys.length > 0) {
+      await db.updateJob(job.id, { clips_json: JSON.stringify(clipKeys), clip_count: clipKeys.length });
+    }
+  }
+  if (clipKeys.length === 0) {
     return c.json(createApiResponse(false, undefined, 'No downloadable clips found', 'NO_CLIPS'), 404);
   }
 
