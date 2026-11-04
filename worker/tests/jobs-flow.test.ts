@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { R2Uploader } from '../src/r2';
 
 // In-memory stand-in for the D1-backed Database class, shared by every
 // `new Database(...)` in the Worker (routes and dispatchWorkflow alike).
@@ -6,18 +7,6 @@ const store = vi.hoisted(() => ({
   uploads: new Map<string, any>(),
   jobs: new Map<string, any>(),
 }));
-
-vi.mock('../src/r2', () => {
-  class R2Uploader {
-    async generatePresignedGetObjectUrl(key: string, expiresIn = 900) {
-      return {
-        url: `https://example.com/signed-url?key=${encodeURIComponent(key)}&expires=${expiresIn}`,
-        expiresAt: Date.now() + expiresIn * 1000,
-      };
-    }
-  }
-  return { R2Uploader };
-});
 
 vi.mock('../src/db', () => {
   class Database {
@@ -98,13 +87,14 @@ const seedUpload = (id: string, userId: number, status = 'uploaded') =>
 let fetchMock: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
-  store.uploads.clear();
-  store.jobs.clear();
-  fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 204, text: async () => '' });
-  (globalThis as any).fetch = fetchMock;
-  vi.spyOn(console, 'log').mockImplementation(() => {});
-  vi.spyOn(console, 'error').mockImplementation(() => {});
-});
+    vi.restoreAllMocks();
+    store.uploads.clear();
+    store.jobs.clear();
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 204, text: async () => '' });
+    (globalThis as any).fetch = fetchMock;
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
 
 describe('REGRESSION: Mini App could never start processing', () => {
   it('the internal route rejects Telegram initData (this is why the old Mini App call failed)', async () => {
@@ -416,18 +406,26 @@ describe('internal download URL endpoint', () => {
   });
 
   it('returns a presigned download URL for valid job', async () => {
+    vi.spyOn(R2Uploader.prototype, 'generatePresignedGetObjectUrl').mockImplementation(async (key: string) => ({
+      url: `https://example.com/presigned?key=${encodeURIComponent(key)}`,
+      expiresAt: Date.now() + 900000,
+    }));
     seedUpload('upload_1', ALICE);
     const created = await (await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_1' })).json() as any;
     const res = await internal(`/api/internal/jobs/${created.data.id}/download-url`);
     expect(res.status).toBe(200);
     const json = await res.json() as any;
     expect(json.ok).toBe(true);
-    expect(json.data.url).toBeTruthy();
+    expect(json.data.url).toContain('example.com/presigned');
     expect(json.data.expiresAt).toBeTypeOf('number');
     expect(json.data.expiresAt).toBeGreaterThan(Date.now());
   });
 
   it('URL is generated for the exact database object key', async () => {
+    vi.spyOn(R2Uploader.prototype, 'generatePresignedGetObjectUrl').mockImplementation(async (key: string) => ({
+      url: `https://example.com/presigned?key=${encodeURIComponent(key)}`,
+      expiresAt: Date.now() + 900000,
+    }));
     const customKey = 'uploads/1001/custom_video.mp4';
     seedUpload('upload_1', ALICE);
     // Override the object key
