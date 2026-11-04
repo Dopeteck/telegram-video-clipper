@@ -22,6 +22,12 @@ export interface Job {
   github_run_url?: string | null;
 }
 
+export interface ClipDownload {
+  filename: string;
+  url: string;
+  expiresAt: number;
+}
+
 export interface StartOptions {
   aspectRatio?: string;
   captionStyle?: string;
@@ -98,4 +104,8 @@ export function latestJobByUpload(jobs: Job[]): Record<string, Job> {
     }
   }
   return result;
+}
+
+export function fetchJobDownloads(apiBaseUrl: string, initData: string, jobId: string): Promise<{ clips: ClipDownload[] }> {
+  return apiRequest<{ clips: ClipDownload[] }>(apiBaseUrl, initData, `/api/jobs/${encodeURIComponent(jobId)}/downloads`);
 }

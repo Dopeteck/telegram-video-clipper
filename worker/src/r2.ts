@@ -171,15 +171,19 @@ export class R2Uploader {
     await this.client.send(command);
   }
 
-  async generatePresignedGetObjectUrl(key: string, expiresIn = 900): Promise<PresignedGetObjectResponse> {
+  async generatePresignedGetObjectUrl(key: string, expiresIn = 900, filename?: string): Promise<PresignedGetObjectResponse> {
     const clientS3Module = await import('@aws-sdk/client-s3');
-    const { GetObjectCommand } = clientS3Module as unknown as { GetObjectCommand: new (input: { Bucket: string; Key: string }) => { input: { Bucket: string; Key: string } } };
+    const { GetObjectCommand } = clientS3Module as unknown as { GetObjectCommand: new (input: { Bucket: string; Key: string; ResponseContentType?: string; ResponseContentDisposition?: string }) => { input: { Bucket: string; Key: string } } };
     if (!GetObjectCommand) {
       throw new Error('@aws-sdk/client-s3 does not export GetObjectCommand');
     }
     const command = new GetObjectCommand({
       Bucket: this.bucket,
       Key: key,
+      ...(filename ? {
+        ResponseContentType: 'video/mp4',
+        ResponseContentDisposition: `attachment; filename="${filename.replace(/[^a-zA-Z0-9._-]/g, '_')}"`,
+      } : {}),
     });
 
     const url = await getSignedUrl(this.client, command, { expiresIn });

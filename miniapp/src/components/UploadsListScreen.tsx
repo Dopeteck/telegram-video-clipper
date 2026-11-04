@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Job, apiRequest as jobsApiRequest, startProcessing, fetchJob, fetchJobs, latestJobByUpload, isTerminalStatus } from '../lib/jobs';
+import { Job, apiRequest as jobsApiRequest, startProcessing, fetchJob, fetchJobs, fetchJobDownloads, latestJobByUpload, isTerminalStatus } from '../lib/jobs';
 
 interface Upload {
   id: string;
@@ -26,6 +26,8 @@ const UploadsListScreen: React.FC<Props> = ({ apiBaseUrl, initData, onNavigate }
   // Jobs are keyed by UPLOAD id because the list renders per upload.
   const [jobsByUpload, setJobsByUpload] = useState<Record<string, Job>>({});
   const [startErrors, setStartErrors] = useState<Record<string, string>>({});
+  const [downloadingClip, setDownloadingClip] = useState<string | null>(null);
+  const [downloadErrors, setDownloadErrors] = useState<Record<string, string>>({});
   const pollTimers = useRef<Record<string, ReturnType<typeof setInterval>>>({});
 
   const apiRequest = useCallback(
@@ -112,6 +114,29 @@ const UploadsListScreen: React.FC<Props> = ({ apiBaseUrl, initData, onNavigate }
       }));
     } finally {
       setProcessingUploadId(null);
+    }
+  };
+
+  const handleDownloadClip = async (jobId: string, clipIndex: number) => {
+    const key = `${jobId}:${clipIndex}`;
+    setDownloadingClip(key);
+    setDownloadErrors(prev => {
+      const next = { ...prev };
+      delete next[jobId];
+      return next;
+    });
+    try {
+      const result = await fetchJobDownloads(apiBaseUrl, initData, jobId);
+      const clip = result.clips?.[clipIndex];
+      if (!clip?.url) throw new Error('Download link is not available for this clip');
+      // Navigate to the short-lived R2 URL; it is signed for attachment download.
+      window.location.assign(clip.url);
+    } catch (e) {
+      setDownloadErrors(prev => ({
+        ...prev,
+        [jobId]: e instanceof Error ? e.message : 'Failed to create download link',
+      }));
+      setDownloadingClip(null);
     }
   };
 
@@ -262,8 +287,29 @@ const UploadsListScreen: React.FC<Props> = ({ apiBaseUrl, initData, onNavigate }
                   </div>
                 )}
                 {job.status === 'completed' && (
-                  <div style={{ fontSize: 12, color: 'var(--success)', marginTop: 8 }}>
-                    ✅ Processing complete — {job.clip_count} clip{job.clip_count === 1 ? '' : 's'} generated.
+                  <div style={{ marginTop: 8 }}>
+                    <div style={{ fontSize: 12, color: 'var(--success)', marginBottom: 8 }}>
+                      ✅ Processing complete — {job.clip_count} clip{job.clip_count === 1 ? '' : 's'} generated.
+                    </div>
+                    {Array.from({ length: job.clip_count }, (_, index) => {
+                      const downloadKey = `${job.id}:${index}`;
+                      return (
+                        <button
+                          key={downloadKey}
+                          className="btn btn-primary"
+                          onClick={() => handleDownloadClip(job.id, index)}
+                          disabled={downloadingClip === downloadKey}
+                          style={{ marginTop: 6, width: '100%' }}
+                        >
+                          {downloadingClip === downloadKey ? '⏳ Preparing download...' : `⬇️ Download clip ${index + 1}`}
+                        </button>
+                      );
+                    })}
+                    {downloadErrors[job.id] && (
+                      <div className="error" style={{ fontSize: 12, marginTop: 8 }}>
+                        ❌ {downloadErrors[job.id]}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

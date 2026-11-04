@@ -427,6 +427,61 @@ api.get('/jobs', async (c) => {
   return c.json(createApiResponse(true, { jobs }));
 });
 
+api.get('/jobs/:jobId/downloads', async (c) => {
+  const user = c.get('telegramUser');
+  const db = new Database(c.env.DB, c.env);
+  const job = await db.getJob(c.req.param('jobId'));
+
+  if (!job || job.telegram_user_id !== user.id) {
+    return c.json(createApiResponse(false, undefined, 'Job not found', 'JOB_NOT_FOUND'), 404);
+  }
+  if (job.status !== 'completed') {
+    return c.json(createApiResponse(false, undefined, 'Clips are not ready yet', 'CLIPS_NOT_READY'), 409);
+  }
+
+  let clipKeys: string[] = [];
+  try {
+    clipKeys = job.clips_json ? JSON.parse(job.clips_json) : [];
+  } catch {
+    console.error(`Invalid clips_json for job ${job.id}`);
+    return c.json(createApiResponse(false, undefined, 'Clip metadata is invalid'), 500);
+  }
+  if (!Array.isArray(clipKeys)) {
+    return c.json(createApiResponse(false, undefined, 'Clip metadata is invalid'), 500);
+  }
+
+  // Backfill jobs completed before clips_json was introduced. The workflow stores
+  // outputs under this job-specific prefix, so this cannot expose another user's files.
+  if (clipKeys.length === 0) {
+    const listed = await c.env.R2_BUCKET.list({ prefix: `jobs/${job.id}/`, limit: 20 });
+    clipKeys = listed.objects
+      .map(object => object.key)
+      .filter(key => key.startsWith(`jobs/${job.id}/`) && key.split('/').length === 3 && key.toLowerCase().endsWith('.mp4'));
+    if (clipKeys.length > 0) {
+      await db.updateJob(job.id, { clips_json: JSON.stringify(clipKeys), clip_count: clipKeys.length });
+    }
+  }
+  if (clipKeys.length === 0) {
+    return c.json(createApiResponse(false, undefined, 'No downloadable clips found', 'NO_CLIPS'), 404);
+  }
+
+  const r2 = new R2Uploader(c.env);
+  try {
+    const clips = await Promise.all(clipKeys.map(async (key, index) => {
+      if (typeof key !== 'string' || !key.startsWith(`jobs/${job.id}/`) || key.split('/').length !== 3) {
+        throw new Error('Invalid stored clip object key');
+      }
+      const filename = key.split('/').pop() || `clip-${index + 1}.mp4`;
+      const presigned = await r2.generatePresignedGetObjectUrl(key, 900, filename);
+      return { filename, url: presigned.url, expiresAt: presigned.expiresAt };
+    }));
+    return c.json(createApiResponse(true, { clips }));
+  } catch (error) {
+    console.error(`Failed to generate clip download URLs for job ${job.id}:`, error);
+    return c.json(createApiResponse(false, undefined, 'Failed to generate clip download links'), 500);
+  }
+});
+
 api.get('/jobs/:jobId', async (c) => {
   const user = c.get('telegramUser');
   const db = new Database(c.env.DB, c.env);
@@ -491,9 +546,22 @@ internalApi.post('/jobs/:jobId/complete', async (c) => {
 
   const updates: Partial<Job> = { status: status as Job['status'] };
 
-  // Only a terminal report finishes the job and fixes the clip count.
+  // Clip keys must be scoped to this job. Never persist arbitrary R2 object keys
+  // supplied by the workflow callback.
   if (TERMINAL_STATUSES.includes(status)) {
-    updates.clip_count = clips.length;
+    const safeClipKeys = status === 'completed'
+      ? clips.filter((key: unknown): key is string =>
+          typeof key === 'string' &&
+          key.startsWith(`jobs/${jobId}/`) &&
+          key.split('/').length === 3 &&
+          key.toLowerCase().endsWith('.mp4')
+        ).slice(0, 20)
+      : [];
+    if (status === 'completed' && safeClipKeys.length !== clips.length) {
+      return c.json(createApiResponse(false, undefined, 'Invalid clip object keys supplied'), 400);
+    }
+    updates.clip_count = safeClipKeys.length;
+    updates.clips_json = JSON.stringify(safeClipKeys);
     updates.completed_at = Date.now();
   }
 
