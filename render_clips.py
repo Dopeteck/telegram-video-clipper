@@ -385,7 +385,7 @@ def render(seg, words, source, W, H, workdir, aspect, out_dir=None, style=DEFAUL
         vf = (f"[0:v]split=2[a][b];[a]crop={pcw}:{pch}:{positions[0]}:{py},"
               f"scale={tw}:{panel_h}[top];[b]crop={pcw}:{pch}:{positions[1]}:{py},"
               f"scale={tw}:{panel_h}[bottom];[top][bottom]vstack=inputs=2,"
-              f"pad={tw}:{th}:0:0,subtitles=_caption.ass")
+              f"pad={tw}:{th}:0:0,subtitles=_caption.ass[v]")
         mode = "podcast split-screen"
     elif preserve_full_frame:
         vf = build_vertical_fit_filter(tw, th)
@@ -415,10 +415,14 @@ def render(seg, words, source, W, H, workdir, aspect, out_dir=None, style=DEFAUL
                      f";[1:v]scale={width}:-1[logo];"
                      "[captioned][logo]overlay=W-w-24:24:eof_action=repeat[v]")
         else:
-            if layout == "single":
+            if layout == "split":
+                graph = (vf.replace("[v]", "[captioned]") +
+                         f";[1:v]scale={width}:-1[logo];"
+                         "[captioned][logo]overlay=W-w-24:24:eof_action=repeat[v]")
+            else:
                 vf = "[0:v]" + vf
-            graph = (vf + f"[captioned];[1:v]scale={width}:-1[logo];"
-                     "[captioned][logo]overlay=W-w-24:24:eof_action=repeat[v]")
+                graph = (vf + f"[captioned];[1:v]scale={width}:-1[logo];"
+                         "[captioned][logo]overlay=W-w-24:24:eof_action=repeat[v]")
         pos = cmd.index("-t")
         cmd[pos:pos] = ["-i", brand["logo"]]
         cmd[cmd.index("-c:v"):cmd.index("-c:v")] = ["-filter_complex", graph, "-map", "[v]", "-map", "0:a?"]
