@@ -125,6 +125,13 @@ jobs:
         working-directory: ./worker
         run: npm run build
 
+      - name: Reconcile pre-existing D1 migration state
+        working-directory: ./worker
+        run: node scripts/reconcile-d1-migration-history.mjs
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
       - name: Apply D1 migrations before Worker deployment
         uses: cloudflare/wrangler-action@v4
         with:
