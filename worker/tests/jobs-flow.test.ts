@@ -327,10 +327,11 @@ describe('internal routes stay protected and keep working for the workflow', () 
     expect(job.completed_at ?? null).toBeNull();
     expect(job.github_run_url).toBe('https://github.com/Dopeteck/telegram-video-clipper/actions/runs/1');
 
-    await internal(`/api/internal/jobs/${id}/complete`, 'POST', { clips: ['jobs/a/1.mp4', 'jobs/a/2.mp4'], status: 'completed' });
+    await internal(`/api/internal/jobs/${id}/complete`, 'POST', { clips: [`jobs/${id}/1.mp4`, `jobs/${id}/2.mp4`], status: 'completed' });
     job = store.jobs.get(id);
     expect(job.status).toBe('completed');
     expect(job.clip_count).toBe(2);
+    expect(JSON.parse(job.clips_json)).toEqual([`jobs/${id}/1.mp4`, `jobs/${id}/2.mp4`]);
     expect(job.completed_at).toBeTypeOf('number');
   });
 
