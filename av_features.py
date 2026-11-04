@@ -26,22 +26,23 @@ def _audio_envelope(video_path, window=0.5):
              "-ac", "1", "-ar", "8000", "-c:a", "pcm_s16le", str(wav_path)],
             check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
         )
+        envelope = []
         with wave.open(str(wav_path), "rb") as wav:
-            rate, width, frames = wav.getframerate(), wav.getsampwidth(), wav.getnframes()
-            raw = wav.readframes(frames)
-        if width != 2 or not raw:
-            return []
-        samples = struct.unpack("<" + "h" * (len(raw) // 2), raw)
-    step = max(1, int(rate * window))
-    envelope = []
-    for offset in range(0, len(samples), step):
-        chunk = samples[offset:offset + step]
-        if not chunk:
-            continue
-        rms = math.sqrt(sum(v * v for v in chunk) / len(chunk)) / 32768.0
-        envelope.append((offset / rate, rms))
-    return envelope
-
+            rate, width = wav.getframerate(), wav.getsampwidth()
+            if width != 2:
+                return []
+            step = max(1, int(rate * window))
+            offset = 0
+            while True:
+                raw = wav.readframes(step)
+                if not raw:
+                    break
+                samples = struct.unpack("<" + "h" * (len(raw) // 2), raw)
+                if samples:
+                    rms = math.sqrt(sum(v * v for v in samples) / len(samples)) / 32768.0
+                    envelope.append((offset / rate, rms))
+                    offset += len(samples)
+        return envelope
 
 def _scene_changes(video_path, sample_fps=1.0):
     ffmpeg = shutil.which("ffmpeg")
