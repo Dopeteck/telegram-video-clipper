@@ -182,7 +182,7 @@ export class R2Uploader {
       Key: key,
       ...(filename ? {
         ResponseContentType: 'video/mp4',
-        ResponseContentDisposition: `attachment; filename="${filename.replace(/[\\"\\r\\n]/g, '_')}"`,
+        ResponseContentDisposition: `attachment; filename="${filename.replace(/[^a-zA-Z0-9._-]/g, '_')}"`,
       } : {}),
     });
 
