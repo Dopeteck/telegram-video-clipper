@@ -230,6 +230,42 @@ def ass_escape(s):
     return s.replace("\\", "").replace("{", "(").replace("}", ")")
 
 
+def build_vertical_fit_filter(tw, th):
+    """Keep the entire landscape frame visible inside a vertical canvas.
+
+    A blurred, enlarged copy fills the background; the original frame is
+    scaled down proportionally and centered on top. Nothing from the source
+    frame (including faces and existing subtitles) is cropped away.
+    """
+    return (
+        f"[0:v]split=2[bg][fg];"
+        f"[bg]scale={tw}:{th}:force_original_aspect_ratio=increase,"
+        f"crop={tw}:{th},boxblur=24:12[bgblur];"
+        f"[fg]scale={tw}:{th}:force_original_aspect_ratio=decrease[fgfit];"
+        f"[bgblur][fgfit]overlay=(W-w)/2:(H-h)/2,"
+        f"subtitles=_caption.ass[v]"
+    )
+
+
+def group_caption_words(words, max_chars):
+    """Group captions without exceeding the safe horizontal text budget."""
+    groups, current, length = [], [], 0
+    for word in words:
+        token = str(word.get("word", "")).strip()
+        if not token:
+            continue
+        extra = len(token) + (1 if current else 0)
+        if current and (len(current) >= WORDS_PER_LINE or length + extra > max_chars):
+            groups.append(current)
+            current, length = [], 0
+            extra = len(token)
+        current.append(word)
+        length += extra
+    if current:
+        groups.append(current)
+    return groups
+
+
 def build_ass(words, clip_start, clip_end, path, tw, th, font_size, margin_v,
               style_name=DEFAULT_STYLE, brand=None):
     st = dict(get_style(style_name))
@@ -254,7 +290,10 @@ def build_ass(words, clip_start, clip_end, path, tw, th, font_size, margin_v,
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
         "Effect, Text\n"
     )
-    groups = [sub[i:i + WORDS_PER_LINE] for i in range(0, len(sub), WORDS_PER_LINE)]
+    # Keep every caption inside the safe width. Vertical captions use fewer words
+    # per line because their canvas is much narrower than landscape output.
+    max_chars = max(8, int((tw - 200) / max(1, font_size * 0.58)))
+    groups = group_caption_words(sub, max_chars)
     events = []
     hl = r"{\c" + st["highlight"] + "}"
     white = r"{\c" + color + "}"
@@ -332,7 +371,11 @@ def render(seg, words, source, W, H, workdir, aspect, out_dir=None, style=DEFAUL
     build_ass(cap_words, start, start + dur, out_dir / "_caption.ass",
               tw, th, font_size, margin_v, style, brand)
 
-    needs_track = cw < W * 0.95          # real horizontal crop -> track the speaker
+    # A landscape source forced into a vertical canvas must not be cropped.
+    # Fit the entire source frame over a blurred fill background instead. This
+    # protects faces, on-screen text and subtitles embedded in the source.
+    preserve_full_frame = aspect == "9:16" and (W / float(H)) > (9.0 / 16.0) * 1.15
+    needs_track = cw < W * 0.95 and not preserve_full_frame
     if layout == "split":
         # Keep every YUV420 panel even-sized. Older libass/ffmpeg builds can
         # crash on odd-height intermediate frames (854px drafts / 2 = 427).
@@ -342,8 +385,11 @@ def render(seg, words, source, W, H, workdir, aspect, out_dir=None, style=DEFAUL
         vf = (f"[0:v]split=2[a][b];[a]crop={pcw}:{pch}:{positions[0]}:{py},"
               f"scale={tw}:{panel_h}[top];[b]crop={pcw}:{pch}:{positions[1]}:{py},"
               f"scale={tw}:{panel_h}[bottom];[top][bottom]vstack=inputs=2,"
-              f"pad={tw}:{th}:0:0,subtitles=_caption.ass")
+              f"pad={tw}:{th}:0:0,subtitles=_caption.ass[v]")
         mode = "podcast split-screen"
+    elif preserve_full_frame:
+        vf = build_vertical_fit_filter(tw, th)
+        mode = "full-frame-fit-blurred-background"
     elif needs_track:
         track = smooth_track(detect_track(render_src, start, dur, W, workdir), W, cw)
         build_sendcmd(track, cw, out_dir / "_crop.cmd")
@@ -364,15 +410,24 @@ def render(seg, words, source, W, H, workdir, aspect, out_dir=None, style=DEFAUL
            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(out)]
     if brand and brand.get("logo"):
         width = max(20, round(brand["logo_width"] * tw / 1920))
-        if layout == "single":
-            vf = "[0:v]" + vf
-        graph = (vf + f"[captioned];[1:v]scale={width}:-1[logo];"
-                 "[captioned][logo]overlay=W-w-24:24:eof_action=repeat[v]")
+        if preserve_full_frame:
+            graph = (vf.replace("[v]", "[captioned]") +
+                     f";[1:v]scale={width}:-1[logo];"
+                     "[captioned][logo]overlay=W-w-24:24:eof_action=repeat[v]")
+        else:
+            if layout == "split":
+                graph = (vf.replace("[v]", "[captioned]") +
+                         f";[1:v]scale={width}:-1[logo];"
+                         "[captioned][logo]overlay=W-w-24:24:eof_action=repeat[v]")
+            else:
+                vf = "[0:v]" + vf
+                graph = (vf + f"[captioned];[1:v]scale={width}:-1[logo];"
+                         "[captioned][logo]overlay=W-w-24:24:eof_action=repeat[v]")
         pos = cmd.index("-t")
         cmd[pos:pos] = ["-i", brand["logo"]]
         cmd[cmd.index("-c:v"):cmd.index("-c:v")] = ["-filter_complex", graph, "-map", "[v]", "-map", "0:a?"]
-    elif layout == "split":
-        cmd[cmd.index("-c:v"):cmd.index("-c:v")] = ["-filter_complex", vf + "[v]", "-map", "[v]", "-map", "0:a?"]
+    elif layout == "split" or preserve_full_frame:
+        cmd[cmd.index("-c:v"):cmd.index("-c:v")] = ["-filter_complex", vf, "-map", "[v]", "-map", "0:a?"]
     else:
         cmd[cmd.index("-c:v"):cmd.index("-c:v")] = ["-vf", vf]
     if loudnorm:

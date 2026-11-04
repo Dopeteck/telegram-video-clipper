@@ -222,6 +222,28 @@ class TestRenderHelpers:
         assert cw == 608                     # round(1080 * 1080/1920) = round(607.5)
         assert ch == 1080 and x0 == 656 and y0 == 0
 
+    def test_vertical_fit_filter_preserves_source_aspect(self):
+        vf = render_clips.build_vertical_fit_filter(1080, 1920)
+        assert "split=2[bg][fg]" in vf
+        assert "force_original_aspect_ratio=decrease[fgfit]" in vf
+        assert "overlay=(W-w)/2:(H-h)/2" in vf
+        assert "subtitles=_caption.ass[v]" in vf
+        assert "crop=1080:1920" in vf  # only the blurred background is cropped
+
+    def test_caption_groups_fit_narrow_vertical_width(self):
+        words = [
+            {"word": "This", "start": 0, "end": 0.2},
+            {"word": "subtitle", "start": 0.2, "end": 0.4},
+            {"word": "should", "start": 0.4, "end": 0.6},
+            {"word": "remain", "start": 0.6, "end": 0.8},
+            {"word": "inside", "start": 0.8, "end": 1.0},
+            {"word": "the", "start": 1.0, "end": 1.2},
+            {"word": "frame", "start": 1.2, "end": 1.4},
+        ]
+        groups = render_clips.group_caption_words(words, max_chars=15)
+        assert all(len(" ".join(w["word"] for w in group)) <= 15 for group in groups)
+        assert [w["word"] for group in groups for w in group] == [w["word"] for w in words]
+
     def test_default_out_env_override(self, tmp_path, monkeypatch):
         monkeypatch.setenv("CHOPIFY_OUT", str(tmp_path / "myclips"))
         assert render_clips.default_out() == tmp_path / "myclips"
