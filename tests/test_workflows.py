@@ -54,9 +54,58 @@ def test_process_video_python_steps_compile():
     assert seen >= 5
 
 
+def test_process_video_uses_worker_download_url():
+    step_names = [s["name"] for s in _steps()]
+    assert "Download video via Worker presigned URL" in step_names
+    # Old boto3 download step should be gone
+    assert "Download video from R2" not in step_names
+
+
 def test_process_video_reads_the_fields_the_worker_actually_returns():
     run = next(s["run"] for s in _steps() if s["name"] == "Get job preferences")
     assert "caption_style" in run  # the jobs table has caption_style, not `style`
+
+
+def test_completion_status_does_not_depend_on_boolean_string_case():
+    step = next(s for s in _steps() if s["name"] == "Report completion to Worker")
+    env = step["env"]
+    assert "steps.chopify.outcome" in env["CHOPIFY_OUTCOME"]
+    assert "== 'True'" not in step["run"]
+
+
+def test_process_video_no_longer_uses_boto3_for_download():
+    for step in _steps():
+        run = step.get("run", "")
+        # Should not import boto3 for download
+        assert "boto3" not in run or "upload" in step["name"].lower()
+        # Should not use R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY for download
+        if "download" in step["name"].lower() and "upload" not in step["name"].lower():
+            assert "R2_ACCESS_KEY_ID" not in run
+            assert "R2_SECRET_ACCESS_KEY" not in run
+            assert "boto3.client" not in run
+            assert "download_file" not in run
+
+
+def test_process_video_downloads_via_http_streaming():
+    step = next(s for s in _steps() if s["name"] == "Download video via Worker presigned URL")
+    run = step["run"]
+    assert "requests.get" in run
+    assert "stream=True" in run
+    assert "iter_content" in run
+    assert "r.raise_for_status()" in run
+
+
+def test_process_video_gets_download_url_from_worker():
+    step = next(s for s in _steps() if s["name"] == "Download video via Worker presigned URL")
+    run = step["run"]
+    assert "/api/internal/jobs/" in run
+    assert "/download-url" in run
+    assert "download_url=" not in run  # URL is internal to the step, not a step output
+    # The presigned URL variable must never be passed to print()
+    import re
+    print_calls = re.findall(r'print\((.*)\)', run)
+    for call in print_calls:
+        assert 'download_url' not in call, f"Presigned URL leaked to print(): {call}"
 
 
 def test_completion_status_does_not_depend_on_boolean_string_case():

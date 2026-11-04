@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { Env, ApiResponse, PresignedUrlResponse, InitiateMultipartResponse, CompleteMultipartRequest, UploadStatusResponse, UserUploadsResponse, TelegramUser, TelegramChat, Job } from './types';
+import { Env, ApiResponse, PresignedUrlResponse, InitiateMultipartResponse, CompleteMultipartRequest, UploadStatusResponse, UserUploadsResponse, TelegramUser, TelegramChat, Job, PresignedGetObjectResponse } from './types';
 import { validateTelegramInitData, createApiResponse, generateId, sanitizeFilename, validateMimeType, validateFileExtension, getExtensionFromMimeType, safeEqual } from './utils';
 import { Database } from './db';
 import { R2Uploader } from './r2';
@@ -508,6 +508,38 @@ internalApi.post('/jobs/:jobId/complete', async (c) => {
   const updatedJob = await db.updateJob(jobId, updates);
 
   return c.json(createApiResponse(true, updatedJob));
+});
+
+internalApi.get('/jobs/:jobId/download-url', async (c) => {
+  const jobId = c.req.param('jobId');
+  const db = new Database(c.env.DB, c.env);
+  
+  const job = await db.getJob(jobId);
+  if (!job) {
+    return c.json(createApiResponse(false, undefined, 'Job not found'), 404);
+  }
+
+  const upload = await db.getUpload(job.upload_id);
+  if (!upload) {
+    return c.json(createApiResponse(false, undefined, 'Associated upload not found'), 404);
+  }
+
+  if (upload.telegram_user_id !== job.telegram_user_id) {
+    return c.json(createApiResponse(false, undefined, 'Upload ownership mismatch'), 403);
+  }
+
+  if (upload.status !== 'uploaded') {
+    return c.json(createApiResponse(false, undefined, `Upload is not ready for download (status: ${upload.status})`), 409);
+  }
+
+  const r2 = new R2Uploader(c.env);
+  try {
+    const presigned = await r2.generatePresignedGetObjectUrl(upload.object_key, 900);
+    return c.json(createApiResponse(true, presigned));
+  } catch (error) {
+    console.error(`Failed to generate presigned download URL for job ${jobId}:`, error);
+    return c.json(createApiResponse(false, undefined, 'Failed to generate download URL'), 500);
+  }
 });
 
 export class JobError extends Error {

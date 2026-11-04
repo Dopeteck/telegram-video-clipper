@@ -1,4 +1,4 @@
-import { Env, PresignedUrlResponse, InitiateMultipartResponse, CompleteMultipartRequest } from './types';
+import { Env, PresignedUrlResponse, InitiateMultipartResponse, CompleteMultipartRequest, PresignedGetObjectResponse } from './types';
 import { generateId } from './utils';
 import { S3Client, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand, AbortMultipartUploadCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -169,5 +169,24 @@ export class R2Uploader {
       Key: key,
     });
     await this.client.send(command);
+  }
+
+  async generatePresignedGetObjectUrl(key: string, expiresIn = 900): Promise<PresignedGetObjectResponse> {
+    const clientS3Module = await import('@aws-sdk/client-s3');
+    const { GetObjectCommand } = clientS3Module as unknown as { GetObjectCommand: new (input: { Bucket: string; Key: string }) => { input: { Bucket: string; Key: string } } };
+    if (!GetObjectCommand) {
+      throw new Error('@aws-sdk/client-s3 does not export GetObjectCommand');
+    }
+    const command = new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: key,
+    });
+
+    const url = await getSignedUrl(this.client, command, { expiresIn });
+
+    return {
+      url,
+      expiresAt: Date.now() + expiresIn * 1000,
+    };
   }
 }
