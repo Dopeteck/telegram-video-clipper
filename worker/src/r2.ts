@@ -3,28 +3,26 @@ import { generateId } from './utils';
 import { S3Client, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand, AbortMultipartUploadCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
-// GetObjectCommand exists at runtime but not in @aws-sdk/client-s3 types.
-// We declare it locally and use a type-safe wrapper.
+// GetObjectCommand exists at runtime on the main export but is not exported in types.
+// Use a type-safe wrapper with dynamic import at module initialization.
 interface GetObjectCommandInput {
   Bucket: string;
   Key: string;
-  // Other optional fields omitted for brevity
 }
 
 interface GetObjectCommandClass {
   new (input: GetObjectCommandInput): { input: GetObjectCommandInput };
 }
 
-const GetObjectCommand = (globalThis as any).GetObjectCommandShim || (() => {
-  // At runtime, the AWS SDK v3 provides GetObjectCommand on the main export
-  const clientS3 = require('@aws-sdk/client-s3');
-  return clientS3.GetObjectCommand;
-})() as GetObjectCommandClass;
+let GetObjectCommandClass: GetObjectCommandClass;
 
-// Store for hot module replacement in development
-if (typeof globalThis !== 'undefined') {
-  (globalThis as any).GetObjectCommandShim = GetObjectCommand;
-}
+// Load the command class once at module initialization
+const clientS3Module = await import('@aws-sdk/client-s3');
+const clientS3Exports = clientS3Module as unknown as { GetObjectCommand?: new (input: { Bucket: string; Key: string }) => { input: { Bucket: string; Key: string } } };
+GetObjectCommandClass = (clientS3Exports.GetObjectCommand ?? class {
+  input: { Bucket: string; Key: string };
+  constructor(input: { Bucket: string; Key: string }) { this.input = input; }
+}) as unknown as { new (input: { Bucket: string; Key: string }): { input: { Bucket: string; Key: string } } };
 
 export class R2Uploader {
   private client: S3Client;
@@ -195,7 +193,7 @@ export class R2Uploader {
   }
 
   async generatePresignedGetObjectUrl(key: string, expiresIn = 900): Promise<PresignedGetObjectResponse> {
-    const command = new GetObjectCommand({
+    const command = new GetObjectCommandClass({
       Bucket: this.bucket,
       Key: key,
     });
