@@ -1,4 +1,12 @@
+import sys
+from pathlib import Path
+
+# Ensure top-level pipeline modules are importable when pytest collects tests
+# from the tests/ directory in GitHub Actions.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 import av_features
+import score_clips
 
 
 def test_score_interval_rewards_audio_and_scene_activity():
@@ -35,7 +43,7 @@ def test_audio_visual_segment_score_records_reasons():
         "audio": [(0.5, 0.9), (1.0, 0.9), (1.5, 0.9)],
         "scene_changes": [1.0, 2.0],
     }
-    segment = __import__("score_clips")._make_segment(sentences, 0, 0, features)
+    segment = score_clips._make_segment(sentences, 0, 0, features)
     assert "audio_energy" in segment["signals"]
     assert segment["signals"]["scene_changes"] == 2
     assert segment["selection_reasons"]
