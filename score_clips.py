@@ -400,13 +400,33 @@ def run(workdir, llm=None, host=OLLAMA_HOST, min_score=None, max_clips=10,
             mode = "ollama"
     if segments is None:
         ms = min_score if min_score is not None else 6.5
-        segments = build_candidates(sentences, min_len, max_len, max_clips)
-        segments = [s for s in segments if s["overall"] >= ms]
+        candidates = build_candidates(sentences, min_len, max_len, max_clips)
+        qualifying = [s for s in candidates if s["overall"] >= ms]
 
-    if not segments:                       # never ship zero clips silently
-        print("No clip reached the threshold - keeping the single best candidate.",
-              flush=True)
-        segments = build_candidates(sentences, min_len, max_len, 1)
+        # Prefer every candidate that meets the requested threshold, then fill
+        # any remaining slots with the strongest distinct candidates. This
+        # keeps --max-clips useful without silently returning just one clip
+        # when the threshold is too strict for this particular transcript.
+        if len(qualifying) < min(max_clips, len(candidates)):
+            selected_ids = {id(s) for s in qualifying}
+            ranked = sorted(candidates, key=lambda s: s["overall"], reverse=True)
+            for candidate in ranked:
+                if len(qualifying) >= min(max_clips, len(candidates)):
+                    break
+                if id(candidate) not in selected_ids:
+                    qualifying.append(candidate)
+                    selected_ids.add(id(candidate))
+
+        segments = sorted(qualifying, key=lambda s: s["start"])
+        below_threshold = [s for s in segments if s["overall"] < ms]
+        if below_threshold:
+            scores = ", ".join(f"{s['overall']:.1f}" for s in below_threshold)
+            print(
+                f"Threshold {ms:.1f}/10 left too few clips; added "
+                f"{len(below_threshold)} top-ranked fallback candidate(s) "
+                f"below threshold (scores: {scores}).",
+                flush=True,
+            )
 
     segments = pick_segments(segments, pick)
     if not segments:
