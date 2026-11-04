@@ -174,26 +174,52 @@ def _grow_window(sentences, seed, taken, min_len, max_len):
     return seed, j
 
 
-def _make_segment(sentences, a, b):
-    """Score the sentence window sentences[a..b] and build a segment dict."""
+def _make_segment(sentences, a, b, av_features=None):
+    """Score a transcript window and attach explainable audiovisual signals."""
     win = sentences[a:b + 1]
     words = [w for s in win for w in s["words"]]
     text = " ".join(w["word"] for w in words)
     scores, _ = score_sentence({"start": win[0]["start"], "end": win[-1]["end"],
                                 "text": text, "words": words})
-    return {
+    transcript_score = sum(WEIGHTS[k] * v for k, v in scores.items()) * 10.0
+    result = {
         "start": round(win[0]["start"], 2),
         "end": round(win[-1]["end"], 2),
         "hook": make_hook(win[0]["text"]),
-        "overall": round(sum(WEIGHTS[k] * v for k, v in scores.items()) * 10.0, 1),
+        "overall": round(transcript_score, 1),
+        "signals": {"transcript": round(transcript_score, 2)},
     }
+    if av_features is not None:
+        from av_features import score_interval
+        audio, visual, cuts = score_interval(av_features, result["start"], result["end"])
+        # Transcript remains the anchor; audio/visual signals can elevate a
+        # musical or visually active passage without overpowering meaning.
+        result["overall"] = round(0.60 * transcript_score + 2.5 * audio + 1.5 * visual, 1)
+        result["signals"].update({"audio_energy": audio, "scene_activity": visual,
+                                  "scene_changes": cuts})
+        reasons = []
+        if audio >= 0.55:
+            reasons.append("elevated audio energy")
+        if visual >= 0.35:
+            reasons.append("active visual cuts")
+        if transcript_score >= 5.0:
+            reasons.append("strong transcript cues")
+        result["selection_reasons"] = reasons or ["balanced transcript/audio/visual signals"]
+    return result
 
 
-def build_candidates(sentences, min_len, max_len, max_clips):
+def build_candidates(sentences, min_len, max_len, max_clips, av_features=None):
     """Seed windows at the highest-scoring sentences, grow to min_len, dedup, sort.
     Windows always end on a complete sentence (complete-thought rule)."""
     scored = {i: score_sentence(s)[1] for i, s in enumerate(sentences)}
-    order = sorted(range(len(sentences)), key=lambda i: scored[i], reverse=True)
+    ranked_seeds = sorted(range(len(sentences)), key=lambda i: scored[i], reverse=True)
+    # Keep strong dialogue seeds, but also sample the full timeline so quiet
+    # lyrics or visually driven sequences can enter the AV shortlist.
+    temporal_count = max(1, max_clips * 5)
+    stride = max(1, len(sentences) // temporal_count)
+    temporal_seeds = list(range(0, len(sentences), stride))
+    priority_seeds = ranked_seeds[:max(1, max_clips * 3)]
+    order = list(dict.fromkeys(priority_seeds + temporal_seeds))
     taken = [False] * len(sentences)
     accepted = []
 
@@ -204,7 +230,7 @@ def build_candidates(sentences, min_len, max_len, max_clips):
         if w is None:
             continue
         a, b = w
-        accepted.append(_make_segment(sentences, a, b))
+        accepted.append(_make_segment(sentences, a, b, av_features))
         for k in range(a, b + 1):
             taken[k] = True
     accepted.sort(key=lambda s: s["start"])
@@ -270,10 +296,14 @@ def pick_segments(segments, spec):
 
 def print_table(segments):
     """Numbered candidate table - pairs with --clips for the review workflow."""
-    print("\n  #    start ->      end  score  hook", flush=True)
+    print("\n  #    start ->      end  score  audio  cuts  hook", flush=True)
     for i, s in enumerate(segments, 1):
+        signals = s.get("signals", {})
         print(f"  {i:>2}  {s['start']:8.2f} -> {s['end']:8.2f}  {s['overall']:4.1f}/10"
+              f"  {signals.get('audio_energy', 0):.2f}  {signals.get('scene_changes', 0):>4}"
               f"  {s['hook']}", flush=True)
+        if s.get("selection_reasons"):
+            print("      Why: " + ", ".join(s["selection_reasons"]), flush=True)
     print("  render a subset with --clips 1,3,5", flush=True)
 
 # ------------------------------------------------------------------- ollama
@@ -366,7 +396,7 @@ def _nearest(values, t):
 
 def run(workdir, llm=None, host=OLLAMA_HOST, min_score=None, max_clips=10,
         min_len=20, max_len=75, search=None, pick=None, semantic=None,
-        embed_model="nomic-embed-text"):
+        embed_model="nomic-embed-text", video_path=None):
     """Score the transcript in workdir and write workdir/segments.json.
 
     Returns (segments, mode): 'ollama', 'heuristic', or 'semantic'.
@@ -400,33 +430,33 @@ def run(workdir, llm=None, host=OLLAMA_HOST, min_score=None, max_clips=10,
             mode = "ollama"
     if segments is None:
         ms = min_score if min_score is not None else 6.5
-        candidates = build_candidates(sentences, min_len, max_len, max_clips)
-        qualifying = [s for s in candidates if s["overall"] >= ms]
-
-        # Prefer every candidate that meets the requested threshold, then fill
-        # any remaining slots with the strongest distinct candidates. This
-        # keeps --max-clips useful without silently returning just one clip
-        # when the threshold is too strict for this particular transcript.
-        if len(qualifying) < min(max_clips, len(candidates)):
-            selected_ids = {id(s) for s in qualifying}
-            ranked = sorted(candidates, key=lambda s: s["overall"], reverse=True)
-            for candidate in ranked:
-                if len(qualifying) >= min(max_clips, len(candidates)):
-                    break
-                if id(candidate) not in selected_ids:
-                    qualifying.append(candidate)
-                    selected_ids.add(id(candidate))
-
+        av_features = None
+        if video_path:
+            from av_features import extract_features
+            print("Extracting audio-energy and sampled scene-change signals...", flush=True)
+            av_features = extract_features(video_path)
+            print(f"AV analysis: {len(av_features['audio'])} audio windows, "
+                  f"{len(av_features['scene_changes'])} sampled visual changes.", flush=True)
+        # Generate a wider shortlist before multimodal ranking so a music
+        # passage is not excluded merely because its lyrics score weakly.
+        candidates = build_candidates(sentences, min_len, max_len,
+                                      max(max_clips * 8, max_clips), av_features)
+        ranked = sorted((s for s in candidates if s["overall"] >= ms),
+                        key=lambda s: s["overall"], reverse=True)
+        # Avoid returning three neighbouring snippets from one sequence when
+        # strong alternatives exist elsewhere in the source.
+        qualifying = []
+        separation = max(30.0, max_len * 1.5)
+        for candidate in ranked:
+            if all(candidate["end"] <= chosen["start"] - separation or
+                   candidate["start"] >= chosen["end"] + separation
+                   for chosen in qualifying):
+                qualifying.append(candidate)
+            if len(qualifying) >= max_clips:
+                break
         segments = sorted(qualifying, key=lambda s: s["start"])
-        below_threshold = [s for s in segments if s["overall"] < ms]
-        if below_threshold:
-            scores = ", ".join(f"{s['overall']:.1f}" for s in below_threshold)
-            print(
-                f"Threshold {ms:.1f}/10 left too few clips; added "
-                f"{len(below_threshold)} top-ranked fallback candidate(s) "
-                f"below threshold (scores: {scores}).",
-                flush=True,
-            )
+        print(f"Quality gate: {len(segments)}/{max_clips} candidates met "
+              f"the minimum score of {ms:.1f}/10; no below-threshold fillers.", flush=True)
 
     segments = pick_segments(segments, pick)
     if not segments:
