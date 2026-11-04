@@ -1,8 +1,8 @@
 """Guards for the GitHub Actions workflows the Worker depends on.
 
-Regression: process-video.yml contained Python at column 0 inside `run: |`
+Regression: process-video.yml contained Python at column 0 inside \`run: |\`
 blocks, so it was not valid YAML. GitHub never registers a workflow file it
-cannot parse, so the Worker's `repository_dispatch` (HTTP 204) started no run.
+cannot parse, so the Worker's \`repository_dispatch\` (HTTP 204) started no run.
 """
 import re
 from pathlib import Path
@@ -18,7 +18,7 @@ def _load(name):
 
 
 def _triggers(doc):
-    # PyYAML (YAML 1.1) parses the bare key `on` as boolean True.
+    # PyYAML (YAML 1.1) parses the bare key \`on\` as boolean True.
     return doc.get("on", doc.get(True))
 
 
@@ -38,7 +38,7 @@ def _steps():
 
 
 def test_process_video_never_pipes_stdout_into_github_output():
-    # Log lines that are not `key=value` make the runner fail the step.
+    # Log lines that are not \`key=value\` make the runner fail the step.
     for step in _steps():
         assert ">> $GITHUB_OUTPUT" not in step.get("run", ""), step["name"]
         assert '>> "$GITHUB_OUTPUT"' not in step.get("run", ""), step["name"]
@@ -47,7 +47,7 @@ def test_process_video_never_pipes_stdout_into_github_output():
 def test_process_video_python_steps_compile():
     seen = 0
     for step in _steps():
-        match = re.search(r"python - <<'PY'\\n(.*?)\\n\\s*PY\\s*$", step.get("run", ""), re.S)
+        match = re.search(r"python - <<'PY'\n(.*?)\n\s*PY\s*$", step.get("run", ""), re.S)
         if match:
             compile(match.group(1), step["name"], "exec")
             seen += 1
@@ -63,7 +63,7 @@ def test_process_video_uses_worker_download_url():
 
 def test_process_video_reads_the_fields_the_worker_actually_returns():
     run = next(s["run"] for s in _steps() if s["name"] == "Get job preferences")
-    assert "caption_style" in run  # the jobs table has caption_style, not `style`
+    assert "caption_style" in run  # the jobs table has caption_style, not \`style\`
 
 
 def test_completion_status_does_not_depend_on_boolean_string_case():
@@ -102,7 +102,7 @@ def test_process_video_gets_download_url_from_worker():
     assert "/download-url" in run
     assert "download_url=" not in run  # URL is internal to the step, not a step output
     # The presigned URL variable must never be passed to print()
-    print_calls = re.findall(r'print\\((.*)\\)', run)
+    print_calls = re.findall(r'print\((.*)\)', run)
     for call in print_calls:
         assert 'download_url' not in call, f"Presigned URL leaked to print(): {call}"
 
@@ -111,7 +111,7 @@ def test_process_video_installs_boto3_for_r2_clip_uploads():
     install_step = next(
         s for s in _steps() if s["name"] == "Install Python dependencies"
     )
-    assert re.search(r"\\bpip install\\b[^\\n]*\\bboto3\\b", install_step["run"])
+    assert re.search(r"\bpip install\b[^\n]*\bboto3\b", install_step["run"])
 
     upload_step = next(s for s in _steps() if s["name"] == "Upload clips to R2")
     assert "import boto3" in upload_step["run"]
