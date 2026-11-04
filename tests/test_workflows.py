@@ -116,3 +116,16 @@ def test_process_video_installs_boto3_for_r2_clip_uploads():
     upload_step = next(s for s in _steps() if s["name"] == "Upload clips to R2")
     assert "import boto3" in upload_step["run"]
     assert "from botocore.config import Config" in upload_step["run"]
+
+def test_process_video_passes_r2_configuration_to_upload_step():
+    step = next(s for s in _steps() if s["name"] == "Upload clips to R2")
+    env = step.get("env", {})
+    assert env["R2_ACCOUNT_ID"] == "${{ secrets.R2_ACCOUNT_ID }}"
+    assert env["R2_ACCESS_KEY_ID"] == "${{ secrets.R2_ACCESS_KEY_ID }}"
+    assert env["R2_SECRET_ACCESS_KEY"] == "${{ secrets.R2_SECRET_ACCESS_KEY }}"
+    assert env["R2_BUCKET"] == "telegram-video-clipper-uploads"
+
+    run = step["run"]
+    for name in ("R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET"):
+        assert name in run
+    assert "Missing R2 upload configuration" in run
