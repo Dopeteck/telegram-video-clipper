@@ -283,7 +283,7 @@ jobs:
                       time.sleep(delay)
 
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
-              out.write(f'uploaded={json.dumps(uploaded)}\\n')
+              out.write(f'uploaded={json.dumps(uploaded)}\n')
           PY
 
       - name: Report completion to Worker
