@@ -67,7 +67,7 @@ def load_transcript(workdir):
     return data
 
 
-ARC_RE = re.compile(r"[.!?\u2026][\"')\]]?$")
+ARC_RE = re.compile(r"[.!?\u2026\u3002\uff01\uff1f][\"')\]\u300d\u300f\uff09\u3011\u3015\u3009\u300b]*$")
 
 
 def is_arc_complete(text):
