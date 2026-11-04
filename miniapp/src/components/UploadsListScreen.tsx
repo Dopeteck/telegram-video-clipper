@@ -126,9 +126,21 @@ const UploadsListScreen: React.FC<Props> = ({ apiBaseUrl, initData, onNavigate }
       return next;
     });
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 20000);
+    let timeout: number | undefined;
     try {
-      const result = await fetchJobDownloads(apiBaseUrl, initData, jobId, controller.signal);
+      // Race the request against a hard deadline as well as aborting it.
+      // Some embedded WebViews have unreliable AbortSignal behaviour; the
+      // Promise.race guarantees the UI exits its loading state regardless.
+      const deadline = new Promise<never>((_, reject) => {
+        timeout = window.setTimeout(() => {
+          controller.abort();
+          reject(new Error('The download link request timed out after 20 seconds. Please try again.'));
+        }, 20000);
+      });
+      const result = await Promise.race([
+        fetchJobDownloads(apiBaseUrl, initData, jobId, controller.signal),
+        deadline,
+      ]);
       const clip = result.clips?.[clipIndex];
       if (!clip?.url) throw new Error('Download link is not available for this clip');
 
@@ -142,14 +154,13 @@ const UploadsListScreen: React.FC<Props> = ({ apiBaseUrl, initData, onNavigate }
         window.location.assign(clip.url);
       }
     } catch (e) {
-      const message = e instanceof Error && e.name === 'AbortError'
-        ? 'The download link request timed out. Please try again.'
-        : e instanceof Error ? e.message : 'Failed to create download link';
+      const message = e instanceof Error
+        ? e.message
+        : 'Failed to create download link';
       setDownloadErrors(prev => ({ ...prev, [jobId]: message }));
     } finally {
-      window.clearTimeout(timeout);
-      // Do not leave the button permanently in "Preparing download" after
-      // handing the URL to Telegram/the browser.
+      if (timeout !== undefined) window.clearTimeout(timeout);
+      // Always release the button, even if a WebView fetch never settles.
       setDownloadingClip(null);
     }
   };
