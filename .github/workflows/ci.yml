@@ -34,7 +34,7 @@ jobs:
 
       - name: Install ffmpeg and fonts on Linux
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-liberation
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-liberation fonts-noto-cjk
 
       - name: Run Chopify tests
         run: pytest tests/ -q
