@@ -44,33 +44,39 @@ def _audio_envelope(video_path, window=0.5):
 
 
 def _scene_changes(video_path, sample_fps=1.0):
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise RuntimeError(f"Could not open video for scene analysis: {video_path}")
-    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-    frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
-    duration = frame_count / fps if frame_count else 0
-    step = max(1, int(round(fps / sample_fps)))
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg is required for visual scene analysis")
+    # Let FFmpeg decode/sample at 1 fps and downscale before Python sees frames.
+    command = [ffmpeg, "-v", "error", "-i", str(video_path), "-vf",
+               f"fps={sample_fps},scale=96:54,format=gray", "-f", "rawvideo",
+               "-pix_fmt", "gray", "pipe:1"]
+    proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    frame_size = 96 * 54
     previous = None
     changes = []
-    frame_no = 0
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        if frame_no % step == 0:
-            small = cv2.resize(frame, (96, 54), interpolation=cv2.INTER_AREA)
-            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+    frame_index = 0
+    try:
+        while True:
+            raw = proc.stdout.read(frame_size)
+            if len(raw) != frame_size:
+                break
+            frame = bytearray(raw)
             if previous is not None:
-                # Mean absolute luminance difference; conservative cut threshold.
-                delta = float(cv2.absdiff(gray, previous).mean()) / 255.0
+                delta = sum(abs(a - b) for a, b in zip(frame, previous)) / (frame_size * 255.0)
                 if delta >= 0.16:
-                    changes.append(frame_no / fps)
-            previous = gray
-        frame_no += 1
-    cap.release()
-    return changes, duration
-
+                    changes.append(frame_index / sample_fps)
+            previous = frame
+            frame_index += 1
+        stderr = proc.stderr.read().decode("utf-8", "replace")
+        code = proc.wait()
+        if code:
+            raise RuntimeError(f"FFmpeg scene sampling failed: {stderr[-500:]}")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    return changes, frame_index / sample_fps
 
 def _percentile(values, fraction):
     if not values:
