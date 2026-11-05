@@ -181,7 +181,13 @@ def _make_segment(sentences, a, b, av_features=None):
     text = " ".join(w["word"] for w in words)
     scores, _ = score_sentence({"start": win[0]["start"], "end": win[-1]["end"],
                                 "text": text, "words": words})
-    transcript_score = sum(WEIGHTS[k] * v for k, v in scores.items()) * 10.0
+    # Preserve sharp moments inside a longer window. The whole-window average
+    # can dilute a standout lyric, punchline, or emotional line; blend it with
+    # the strongest sentence-level score rather than treating every second equally.
+    sentence_scores = [score_sentence(s)[1] for s in win]
+    transcript_average = sum(WEIGHTS[k] * v for k, v in scores.items()) * 10.0
+    sentence_peak = max(sentence_scores, default=transcript_average)
+    transcript_score = 0.65 * transcript_average + 0.35 * sentence_peak
     result = {
         "start": round(win[0]["start"], 2),
         "end": round(win[-1]["end"], 2),
@@ -220,19 +226,25 @@ def build_candidates(sentences, min_len, max_len, max_clips, av_features=None):
     temporal_seeds = list(range(0, len(sentences), stride))
     priority_seeds = ranked_seeds[:max(1, max_clips * 3)]
     order = list(dict.fromkeys(priority_seeds + temporal_seeds))
-    taken = [False] * len(sentences)
+    # Build overlapping alternatives: greedy "taken" suppression previously
+    # removed nearby candidate moments before audiovisual ranking could compare
+    # them. Deduplicate near-identical windows only, then let the caller rank
+    # and enforce spacing across the final selections.
     accepted = []
-
+    seen = set()
+    taken = [False] * len(sentences)  # window growth itself remains unconstrained
     for seed in order:
-        if taken[seed] or len(accepted) >= max_clips:
-            continue
+        if len(accepted) >= max_clips:
+            break
         w = _grow_window(sentences, seed, taken, min_len, max_len)
         if w is None:
             continue
         a, b = w
+        key = (round(sentences[a]["start"], 1), round(sentences[b]["end"], 1))
+        if key in seen:
+            continue
+        seen.add(key)
         accepted.append(_make_segment(sentences, a, b, av_features))
-        for k in range(a, b + 1):
-            taken[k] = True
     accepted.sort(key=lambda s: s["start"])
     return accepted
 
@@ -441,8 +453,19 @@ def run(workdir, llm=None, host=OLLAMA_HOST, min_score=None, max_clips=10,
         # passage is not excluded merely because its lyrics score weakly.
         candidates = build_candidates(sentences, min_len, max_len,
                                       max(max_clips * 8, max_clips), av_features)
-        ranked = sorted((s for s in candidates if s["overall"] >= ms),
-                        key=lambda s: s["overall"], reverse=True)
+        ranked_all = sorted(candidates, key=lambda s: s["overall"], reverse=True)
+        ranked = [s for s in ranked_all if s["overall"] >= ms]
+        if not ranked:
+            print("Best rejected candidates (score / transcript / audio / scene activity):",
+                  flush=True)
+            for candidate in ranked_all[:5]:
+                signals = candidate.get("signals", {})
+                print(f"  {candidate['start']:.1f}-{candidate['end']:.1f}s "
+                      f"{candidate['overall']:.1f}/10 | "
+                      f"transcript {signals.get('transcript', 0):.2f} | "
+                      f"audio {signals.get('audio_energy', 0):.2f} | "
+                      f"visual {signals.get('scene_activity', 0):.2f} | "
+                      f"{candidate.get('hook', 'clip')}", flush=True)
         # Avoid returning three neighbouring snippets from one sequence when
         # strong alternatives exist elsewhere in the source.
         qualifying = []
