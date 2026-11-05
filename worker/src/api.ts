@@ -639,7 +639,9 @@ export async function createProcessingJob(
     throw new JobError(`Upload is not ready for processing (status: ${upload.status})`, 409, 'UPLOAD_NOT_READY');
   }
 
-  const jobId = `job_${Date.now()}_${telegramUserId}`;
+  // Timestamp-only IDs can collide when a user retries immediately after a failed dispatch.
+  // Use cryptographic randomness so each retry gets a distinct primary key.
+  const jobId = `job_${generateId()}_${telegramUserId}`;
 
   await db.createJob({
     id: jobId,

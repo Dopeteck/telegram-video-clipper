@@ -245,13 +245,16 @@ describe('dispatch failures never leave a job stuck', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('after a failed dispatch the user can retry (failed jobs are not "active")', async () => {
+  it('after a failed dispatch the user can retry even within the same millisecond', async () => {
     seedUpload('upload_1', ALICE);
+    // Reproduce timestamp-only primary-key collisions on immediate retries.
+    vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
     fetchMock.mockResolvedValueOnce({ ok: false, status: 500, text: async () => 'boom' });
     await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_1' });
     const retry = await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_1' });
     expect(retry.status).toBe(200);
     expect(store.jobs.size).toBe(2);
+    expect(new Set([...store.jobs.keys()]).size).toBe(2);
   });
 });
 
