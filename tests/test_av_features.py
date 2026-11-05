@@ -47,3 +47,46 @@ def test_audio_visual_segment_score_records_reasons():
     assert "audio_energy" in segment["signals"]
     assert segment["signals"]["scene_changes"] == 2
     assert segment["selection_reasons"]
+
+
+
+def test_dramatic_dialogue_can_clear_gate_without_canned_viral_keywords():
+    lines = [
+        "Listen to him.",
+        "Silence!",
+        "When you first came here, you asked for judgment.",
+        "And I pass it now!",
+        "We don't want judgment!",
+        "He's here!",
+        "We don't want judgment!",
+        "Exile!",
+        "No!",
+    ]
+    sentences = []
+    for index, text in enumerate(lines):
+        start = float(index * 2)
+        tokens = text.split()
+        words = []
+        for token_index, token in enumerate(tokens):
+            word_start = start + token_index * 0.12
+            words.append({
+                "word": token,
+                "start": word_start,
+                "end": word_start + 0.1,
+            })
+        sentences.append({
+            "start": start,
+            "end": start + 1.2,
+            "text": text,
+            "words": words,
+        })
+
+    features = {
+        "audio": [(float(t), 0.52) for t in range(18)],
+        "scene_changes": [float(t) for t in range(1, 18)],
+    }
+    segment = score_clips._make_segment(sentences, 0, len(sentences) - 1, features)
+
+    assert segment["signals"]["dialogue_dynamics"] >= 6.5
+    assert segment["overall"] >= 5.5
+    assert "sustained dramatic dialogue" in segment["selection_reasons"]
