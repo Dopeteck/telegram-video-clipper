@@ -90,3 +90,41 @@ def test_dramatic_dialogue_can_clear_gate_without_canned_viral_keywords():
     assert segment["signals"]["dialogue_dynamics"] >= 6.5
     assert segment["overall"] >= 5.5
     assert "sustained dramatic dialogue" in segment["selection_reasons"]
+
+
+def _sentence(start, end, text):
+    words = text.split()
+    tokens = []
+    duration = max(0.1, (end - start) / max(1, len(words)))
+    for index, word in enumerate(words):
+        word_start = start + index * duration
+        tokens.append({"word": word, "start": word_start,
+                       "end": min(end, word_start + duration * 0.8)})
+    return {"start": start, "end": end, "text": text, "words": tokens}
+
+
+def test_long_inactive_gap_splits_unrelated_transcript_moments():
+    first = _sentence(0.0, 5.0, "The first moment is complete.")
+    second = _sentence(13.0, 18.0, "A completely different moment begins.")
+    assert score_clips._is_natural_break(first, second, None)
+    window = score_clips._grow_window([first, second], 0, [False, False], 8, 30)
+    assert window == (0, 0)
+
+
+def test_active_audio_or_visuals_can_bridge_transcript_silence():
+    first = _sentence(0.0, 5.0, "The performance continues.")
+    second = _sentence(13.0, 18.0, "The next lyric arrives.")
+    audio_features = {"audio": [(t, 0.8) for t in range(5, 14)],
+                      "scene_changes": []}
+    visual_features = {"audio": [(t, 0.05) for t in range(5, 14)],
+                       "scene_changes": [8.0]}
+    assert not score_clips._is_natural_break(first, second, audio_features)
+    assert not score_clips._is_natural_break(first, second, visual_features)
+
+
+def test_quiet_gap_with_av_features_is_a_natural_boundary():
+    first = _sentence(0.0, 5.0, "The first scene ends.")
+    second = _sentence(13.0, 18.0, "A new scene starts.")
+    quiet = {"audio": [(t, 0.02) for t in range(5, 14)],
+             "scene_changes": []}
+    assert score_clips._is_natural_break(first, second, quiet)
