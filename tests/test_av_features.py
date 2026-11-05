@@ -107,7 +107,7 @@ def test_long_inactive_gap_splits_unrelated_transcript_moments():
     first = _sentence(0.0, 5.0, "The first moment is complete.")
     second = _sentence(13.0, 18.0, "A completely different moment begins.")
     assert score_clips._is_natural_break(first, second, None)
-    window = score_clips._grow_window([first, second], 0, [False, False], 10, 30)
+    window = score_clips._grow_window([first, second], 0, [False, False], 8, 30)
     assert window == (0, 0)
 
 
