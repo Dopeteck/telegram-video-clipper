@@ -133,6 +133,41 @@ def _sm_cues(low):
     return _cues(low, INSIGHT_CUES)
 
 
+# Contextual conflict/turning-point language that fixed "viral" keywords miss.
+# These are broad narrative signals, not references to any particular title.
+DRAMA_CUES = (
+    "silence", "judgment", "exile", "forgive", "forgiveness", "betray",
+    "betrayed", "blame", "fault", "belong here", "get out", "go away",
+    "leave", "stop", "don't", "do not", "can't", "cannot", "won't",
+    "never", "no more", "because of you", "what have you done",
+    "what happened", "i saw", "i know", "i had nothing", "you will",
+    "must", "order", "attack", "fight", "kill", "dead", "threat",
+    "promise", "refuse", "deny", "confess", "truth", "secret",
+    "choose", "decide", "it's time", "this is", "let him", "listen",
+)
+
+
+def _dialogue_dynamics(sentences):
+    """Estimate dramatic exchange structure from pace, reactions and conflict.
+
+    This complements lexical virality cues: a tense exchange can be compelling
+    even when nobody says a canned word such as 'shocking' or 'amazing'.
+    """
+    if not sentences:
+        return 0.0
+    start = sentences[0]["start"]
+    end = sentences[-1]["end"]
+    duration = max(1.0, end - start)
+    count = len(sentences)
+    pace = min(1.0, count / max(1.0, duration / 2.2))
+    texts = [s["text"].strip() for s in sentences]
+    reactions = sum(text.endswith(("?", "!")) for text in texts)
+    reaction_rate = min(1.0, (reactions / max(1, count)) * 2.5)
+    low = " " + " ".join(texts).lower() + " "
+    conflict = _cues(low, DRAMA_CUES)
+    return round(10.0 * (0.45 * pace + 0.25 * reaction_rate + 0.30 * conflict), 2)
+
+
 def make_hook(text, max_words=7):
     words = [_norm_token(w) for w in text.split()]
     words = [w for w in words if w and w not in FILLER_TOKENS]
@@ -187,13 +222,19 @@ def _make_segment(sentences, a, b, av_features=None):
     sentence_scores = [score_sentence(s)[1] for s in win]
     transcript_average = sum(WEIGHTS[k] * v for k, v in scores.items()) * 10.0
     sentence_peak = max(sentence_scores, default=transcript_average)
-    transcript_score = 0.65 * transcript_average + 0.35 * sentence_peak
+    dialogue_dynamics = _dialogue_dynamics(win)
+    # Keep transcript semantics as the anchor, but give sustained dramatic
+    # exchanges credit for pacing, audience-reaction punctuation and conflict.
+    transcript_score = (0.50 * transcript_average +
+                        0.20 * sentence_peak +
+                        0.30 * dialogue_dynamics)
     result = {
         "start": round(win[0]["start"], 2),
         "end": round(win[-1]["end"], 2),
         "hook": make_hook(win[0]["text"]),
         "overall": round(transcript_score, 1),
-        "signals": {"transcript": round(transcript_score, 2)},
+        "signals": {"transcript": round(transcript_score, 2),
+                    "dialogue_dynamics": dialogue_dynamics},
     }
     if av_features is not None:
         from av_features import score_interval
@@ -210,6 +251,8 @@ def _make_segment(sentences, a, b, av_features=None):
             reasons.append("active visual cuts")
         if transcript_score >= 5.0:
             reasons.append("strong transcript cues")
+        if dialogue_dynamics >= 6.5:
+            reasons.append("sustained dramatic dialogue")
         result["selection_reasons"] = reasons or ["balanced transcript/audio/visual signals"]
     return result
 
