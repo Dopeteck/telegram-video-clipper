@@ -225,7 +225,7 @@ def _creator_value_score(text):
     are common in podcasts, interviews, commentary, and creator tutorials.
     """
     low = " " + (text or "").lower() + " "
-    tokens = re.findall(r"\\b[\\w']+\\b", low)
+    tokens = re.findall(r"\b[\w']+\b", low)
     if not tokens:
         return 0.0
     signals = 0.0
@@ -239,7 +239,7 @@ def _creator_value_score(text):
     if any(p in low for p in (" but ", " however ", " instead ", " whereas ", " compared to ")):
         signals += 0.18
     # Specificity can make a useful story or takeaway more clip-worthy.
-    if any(re.search(r"\\d", token) for token in tokens):
+    if any(re.search(r"\d", token) for token in tokens):
         signals += 0.15
     if len(tokens) >= 24:
         signals += 0.10
