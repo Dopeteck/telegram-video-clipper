@@ -178,7 +178,38 @@ def _norm_token(w):
     return re.sub(r"[^\w']", "", w.lower())
 
 
-def _grow_window(sentences, seed, taken, min_len, max_len):
+def _boundary_signals(left, right, av_features=None):
+    """Measure whether a transcript gap looks like a true break in the content.
+
+    A long gap alone is not enough to split a musical/performance passage:
+    nearby audio energy and visual changes can indicate that the moment is
+    continuing even when there are few recognized words.
+    """
+    gap = max(0.0, right["start"] - left["end"])
+    if av_features is None:
+        return gap, 0.0, 0
+    audio = [(t, value) for t, value in av_features.get("audio", [])
+             if left["end"] - 1.0 <= t <= right["start"] + 1.0]
+    energy = sum(value for _, value in audio) / len(audio) if audio else 0.0
+    cuts = sum(left["end"] - 1.0 <= t <= right["start"] + 1.0
+               for t in av_features.get("scene_changes", []))
+    return gap, energy, cuts
+
+
+def _is_natural_break(left, right, av_features=None):
+    """Avoid growing one clip across a long, inactive gap into another moment."""
+    gap, energy, cuts = _boundary_signals(left, right, av_features)
+    if gap < 4.5:
+        return False
+    if av_features is None:
+        return True
+    # Sustained sound or visual activity can bridge transcript silence (music,
+    # applause, action, reaction shots). Split only when the gap is also quiet
+    # and visually inactive.
+    return energy < 0.20 and cuts == 0
+
+
+def _grow_window(sentences, seed, taken, min_len, max_len, av_features=None):
     """Grow a window from `seed` to >= min_len seconds, then extend or trim it so
     it always ends on a complete sentence (the #1 complaint about AI clippers is
     clips that start or end mid-thought). Returns (seed, end_idx) or None."""
@@ -189,6 +220,8 @@ def _grow_window(sentences, seed, taken, min_len, max_len):
 
     j = seed
     while span(seed, j) < min_len and j + 1 < n and not taken[j + 1]:
+        if _is_natural_break(sentences[j], sentences[j + 1], av_features):
+            break
         j += 1
     while span(seed, j) > max_len and j > seed:
         j -= 1
@@ -198,6 +231,8 @@ def _grow_window(sentences, seed, taken, min_len, max_len):
     # sentence ends with terminal punctuation
     while not is_arc_complete(sentences[j]["text"]) and j + 1 < n \
             and not taken[j + 1] and span(seed, j + 1) <= max_len:
+        if _is_natural_break(sentences[j], sentences[j + 1], av_features):
+            break
         j += 1
     # still incomplete -> back off to the last complete sentence in the window
     while j > seed and not is_arc_complete(sentences[j]["text"]):
@@ -279,7 +314,7 @@ def build_candidates(sentences, min_len, max_len, max_clips, av_features=None):
     for seed in order:
         if len(accepted) >= max_clips:
             break
-        w = _grow_window(sentences, seed, taken, min_len, max_len)
+        w = _grow_window(sentences, seed, taken, min_len, max_len, av_features)
         if w is None:
             continue
         a, b = w
@@ -351,15 +386,42 @@ def pick_segments(segments, spec):
 
 def print_table(segments):
     """Numbered candidate table - pairs with --clips for the review workflow."""
-    print("\n  #    start ->      end  score  audio  cuts  hook", flush=True)
+    print("\n  #    start ->      end  score  transcript  audio  visual  cuts  hook", flush=True)
     for i, s in enumerate(segments, 1):
         signals = s.get("signals", {})
         print(f"  {i:>2}  {s['start']:8.2f} -> {s['end']:8.2f}  {s['overall']:4.1f}/10"
-              f"  {signals.get('audio_energy', 0):.2f}  {signals.get('scene_changes', 0):>4}"
-              f"  {s['hook']}", flush=True)
+              f"  {signals.get('transcript', 0):>10.2f}"
+              f"  {signals.get('audio_energy', 0):.2f}"
+              f"  {signals.get('scene_activity', 0):.2f}"
+              f"  {signals.get('scene_changes', 0):>4}  {s['hook']}", flush=True)
         if s.get("selection_reasons"):
             print("      Why: " + ", ".join(s["selection_reasons"]), flush=True)
     print("  render a subset with --clips 1,3,5", flush=True)
+
+
+def print_candidate_diagnostics(candidates, selected, min_score, separation, limit=8):
+    """Always explain the leading candidates, including gate and spacing rejects."""
+    selected_ids = {(s["start"], s["end"]) for s in selected}
+    print("\nCandidate diagnostics (highest-ranked alternatives):", flush=True)
+    for candidate in sorted(candidates, key=lambda s: s["overall"], reverse=True)[:limit]:
+        signals = candidate.get("signals", {})
+        identity = (candidate["start"], candidate["end"])
+        if identity in selected_ids:
+            status = "SELECTED"
+        elif candidate["overall"] < min_score:
+            status = f"REJECTED: below score gate {min_score:.1f}"
+        elif any(not (candidate["end"] <= item["start"] - separation or
+                      candidate["start"] >= item["end"] + separation)
+                 for item in selected):
+            status = "REJECTED: overlaps/is too close to a stronger selection"
+        else:
+            status = "NOT SELECTED: max-clips limit"
+        print(f"  {candidate['start']:.1f}-{candidate['end']:.1f}s "
+              f"{candidate['overall']:.1f}/10 | transcript "
+              f"{signals.get('transcript', 0):.2f} | audio "
+              f"{signals.get('audio_energy', 0):.2f} | visual "
+              f"{signals.get('scene_activity', 0):.2f} | {status} | "
+              f"{candidate.get('hook', 'clip')}", flush=True)
 
 # ------------------------------------------------------------------- ollama
 
@@ -498,17 +560,6 @@ def run(workdir, llm=None, host=OLLAMA_HOST, min_score=None, max_clips=10,
                                       max(max_clips * 8, max_clips), av_features)
         ranked_all = sorted(candidates, key=lambda s: s["overall"], reverse=True)
         ranked = [s for s in ranked_all if s["overall"] >= ms]
-        if not ranked:
-            print("Best rejected candidates (score / transcript / audio / scene activity):",
-                  flush=True)
-            for candidate in ranked_all[:5]:
-                signals = candidate.get("signals", {})
-                print(f"  {candidate['start']:.1f}-{candidate['end']:.1f}s "
-                      f"{candidate['overall']:.1f}/10 | "
-                      f"transcript {signals.get('transcript', 0):.2f} | "
-                      f"audio {signals.get('audio_energy', 0):.2f} | "
-                      f"visual {signals.get('scene_activity', 0):.2f} | "
-                      f"{candidate.get('hook', 'clip')}", flush=True)
         # Avoid returning three neighbouring snippets from one sequence when
         # strong alternatives exist elsewhere in the source.
         qualifying = []
@@ -521,6 +572,7 @@ def run(workdir, llm=None, host=OLLAMA_HOST, min_score=None, max_clips=10,
             if len(qualifying) >= max_clips:
                 break
         segments = sorted(qualifying, key=lambda s: s["start"])
+        print_candidate_diagnostics(ranked_all, segments, ms, separation)
         print(f"Quality gate: {len(segments)}/{max_clips} candidates met "
               f"the minimum score of {ms:.1f}/10; no below-threshold fillers.", flush=True)
 
