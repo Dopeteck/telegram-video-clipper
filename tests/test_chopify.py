@@ -111,11 +111,15 @@ class TestCandidates:
             assert s["hook"]
             assert 0 <= s["overall"] <= 10
 
-    def test_candidates_non_overlapping(self, sample_words):
+    def test_candidate_shortlist_keeps_distinct_alternatives(self, sample_words):
+        # Candidate windows may overlap: this is a ranking shortlist, not the
+        # final rendered selection. The run-level selector enforces spacing.
         sents = score_clips.sentenceize(sample_words)
         segs = score_clips.build_candidates(sents, min_len=5, max_len=30, max_clips=10)
-        for a, b in zip(segs, segs[1:]):
-            assert a["end"] <= b["start"] + 0.01
+        keys = {(round(s["start"], 1), round(s["end"], 1)) for s in segs}
+        assert len(keys) == len(segs)
+        assert len(segs) > 1
+        assert all(s["end"] > s["start"] for s in segs)
 
 
 class TestNearest:
