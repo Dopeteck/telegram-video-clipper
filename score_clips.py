@@ -197,16 +197,55 @@ def _boundary_signals(left, right, av_features=None):
 
 
 def _is_natural_break(left, right, av_features=None):
-    """Avoid growing one clip across a long, inactive gap into another moment."""
+    """Avoid growing across silence or a long pause into another creator moment.
+
+    Short pauses can be natural conversational rhythm. Longer transcript gaps
+    need stronger evidence of continuous non-speech content (e.g. music or
+    action) before we bridge them.
+    """
     gap, energy, cuts = _boundary_signals(left, right, av_features)
     if gap < 4.5:
         return False
     if av_features is None:
         return True
-    # Sustained sound or visual activity can bridge transcript silence (music,
-    # applause, action, reaction shots). Split only when the gap is also quiet
-    # and visually inactive.
+    if gap >= 10.0:
+        # Ambient noise alone should not glue separate creator thoughts
+        # together. Bridge a long gap only when the audio remains strongly
+        # active or the visuals show sustained cut activity.
+        cut_rate = cuts / max(1.0, gap)
+        return not (energy >= 0.70 or cut_rate >= 0.25)
     return energy < 0.20 and cuts == 0
+
+
+def _creator_value_score(text):
+    """Estimate creator-friendly value from natural speech structure.
+
+    This intentionally avoids requiring viral catchphrases. Personal examples,
+    direct audience relevance, concrete details, contrasts, and explanations
+    are common in podcasts, interviews, commentary, and creator tutorials.
+    """
+    low = " " + (text or "").lower() + " "
+    tokens = re.findall(r"\\b[\\w']+\\b", low)
+    if not tokens:
+        return 0.0
+    signals = 0.0
+    # Natural audience-facing phrasing, not a mandatory hook template.
+    if any(p in low for p in (" you ", " your ", " you’re ", " you're ", " imagine ")):
+        signals += 0.22
+    if any(p in low for p in (" i ", " my ", " me ", " we ", " our ")):
+        signals += 0.18
+    if any(p in low for p in (" because ", " the reason ", " that means ", " so that ")):
+        signals += 0.22
+    if any(p in low for p in (" but ", " however ", " instead ", " whereas ", " compared to ")):
+        signals += 0.18
+    # Specificity can make a useful story or takeaway more clip-worthy.
+    if any(re.search(r"\\d", token) for token in tokens):
+        signals += 0.15
+    if len(tokens) >= 24:
+        signals += 0.10
+    if "?" in text or "!" in text:
+        signals += 0.08
+    return min(1.0, signals)
 
 
 def _grow_window(sentences, seed, taken, min_len, max_len, av_features=None):
@@ -258,18 +297,22 @@ def _make_segment(sentences, a, b, av_features=None):
     transcript_average = sum(WEIGHTS[k] * v for k, v in scores.items()) * 10.0
     sentence_peak = max(sentence_scores, default=transcript_average)
     dialogue_dynamics = _dialogue_dynamics(win)
-    # Keep transcript semantics as the anchor, but give sustained dramatic
-    # exchanges credit for pacing, audience-reaction punctuation and conflict.
-    transcript_score = (0.50 * transcript_average +
-                        0.20 * sentence_peak +
-                        0.30 * dialogue_dynamics)
+    creator_value = 10.0 * _creator_value_score(text)
+    # Balance standalone transcript quality with conversational dynamics and
+    # creator-friendly value. This helps useful explanations and personal
+    # stories compete without depending on canned "viral" phrases.
+    transcript_score = (0.42 * transcript_average +
+                        0.18 * sentence_peak +
+                        0.22 * dialogue_dynamics +
+                        0.18 * creator_value)
     result = {
         "start": round(win[0]["start"], 2),
         "end": round(win[-1]["end"], 2),
         "hook": make_hook(win[0]["text"]),
         "overall": round(transcript_score, 1),
         "signals": {"transcript": round(transcript_score, 2),
-                    "dialogue_dynamics": dialogue_dynamics},
+                    "dialogue_dynamics": dialogue_dynamics,
+                    "creator_value": round(creator_value, 2)},
     }
     if av_features is not None:
         from av_features import score_interval
