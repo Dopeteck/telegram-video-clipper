@@ -128,3 +128,26 @@ def test_quiet_gap_with_av_features_is_a_natural_boundary():
     quiet = {"audio": [(t, 0.02) for t in range(5, 14)],
              "scene_changes": []}
     assert score_clips._is_natural_break(first, second, quiet)
+
+
+def test_long_creator_pause_is_boundary_even_with_ambient_activity():
+    first = _sentence(0.0, 5.0, "Here is what I learned.")
+    second = _sentence(17.0, 22.0, "Let me explain the next part.")
+    # Low-to-moderate normalized ambience should not glue separate thoughts.
+    ambient = {"audio": [(t, 0.35) for t in range(5, 17)],
+               "scene_changes": [8.0]}
+    assert score_clips._is_natural_break(first, second, ambient)
+
+
+def test_sustained_high_activity_can_bridge_long_performance_gap():
+    first = _sentence(0.0, 5.0, "The music keeps going.")
+    second = _sentence(17.0, 22.0, "And then the chorus returns.")
+    performance = {"audio": [(t, 0.9) for t in range(5, 17)],
+                   "scene_changes": [float(t) for t in range(6, 17, 3)]}
+    assert not score_clips._is_natural_break(first, second, performance)
+
+
+def test_creator_value_rewards_explanation_and_personal_context():
+    useful = "I learned this because you can compare the first result with the second."
+    generic = "That was a very interesting and wonderful moment."
+    assert score_clips._creator_value_score(useful) > score_clips._creator_value_score(generic)
