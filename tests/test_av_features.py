@@ -151,3 +151,32 @@ def test_creator_value_rewards_explanation_and_personal_context():
     useful = "I learned this because you can compare the first result with the second."
     generic = "That was a very interesting and wonderful moment."
     assert score_clips._creator_value_score(useful) > score_clips._creator_value_score(generic)
+
+
+
+def test_static_talking_head_keeps_transcript_score_without_visual_cuts():
+    sentences = [_sentence(
+        0.0, 8.0,
+        "I learned this because you can make a better decision when you understand the real reason."
+    )]
+    no_activity = {"audio": [(float(t), 0.0) for t in range(8)],
+                   "scene_changes": []}
+    segment = score_clips._make_segment(sentences, 0, 0, no_activity)
+    assert segment["signals"]["scene_activity"] == 0.0
+    assert segment["signals"]["audio_energy"] == 0.0
+    assert segment["overall"] == round(segment["signals"]["transcript"], 1)
+
+
+def test_audio_visual_activity_only_adds_to_transcript_baseline():
+    sentences = [_sentence(
+        0.0, 8.0,
+        "I learned this because you can make a better decision when you understand the real reason."
+    )]
+    quiet = {"audio": [(float(t), 0.0) for t in range(8)],
+             "scene_changes": []}
+    active = {"audio": [(float(t), 0.9) for t in range(8)],
+              "scene_changes": [1.0, 3.0, 5.0]}
+    quiet_segment = score_clips._make_segment(sentences, 0, 0, quiet)
+    active_segment = score_clips._make_segment(sentences, 0, 0, active)
+    assert active_segment["overall"] >= quiet_segment["overall"]
+    assert quiet_segment["overall"] >= quiet_segment["signals"]["transcript"]

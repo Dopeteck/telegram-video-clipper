@@ -317,9 +317,11 @@ def _make_segment(sentences, a, b, av_features=None):
     if av_features is not None:
         from av_features import score_interval
         audio, visual, cuts = score_interval(av_features, result["start"], result["end"])
-        # Transcript remains the anchor; audio/visual signals can elevate a
-        # musical or visually active passage without overpowering meaning.
-        result["overall"] = round(0.60 * transcript_score + 2.5 * audio + 1.5 * visual, 1)
+        # Transcript quality is the baseline. Audio and visual activity are
+        # optional positive evidence, never penalties: talking-head creators,
+        # podcasts and interviews should not lose points for a static camera,
+        # clean speech or quiet delivery.
+        result["overall"] = round(min(10.0, transcript_score + 0.5 * audio + 0.25 * visual), 1)
         result["signals"].update({"audio_energy": audio, "scene_activity": visual,
                                   "scene_changes": cuts})
         reasons = []
@@ -623,8 +625,10 @@ def run(workdir, llm=None, host=OLLAMA_HOST, min_score=None, max_clips=10,
     if not segments:
         if pick:
             raise SystemExit("Nothing to render: --clips removed every candidate.")
-        raise SystemExit("No usable clips found - the transcript may be too short "
-                         f"for --min-len {min_len}s.")
+        raise SystemExit(
+            "No usable clips found. No candidate met the quality threshold or "
+            "formed a complete clip window; inspect the candidate diagnostics above."
+        )
 
     print_table(segments)
     out = workdir / "segments.json"
