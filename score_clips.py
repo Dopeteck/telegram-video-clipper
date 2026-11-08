@@ -25,6 +25,7 @@ import re
 import json
 import argparse
 import urllib.request
+import unicodedata
 from pathlib import Path
 
 OLLAMA_HOST = "http://localhost:11434"
@@ -62,8 +63,8 @@ def load_transcript(workdir):
         data = json.loads(path.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError as e:
         raise SystemExit(f"transcript.json is not valid JSON: {e}")
-    if not data.get("words"):
-        raise SystemExit("transcript.json has no words - was the video silent?")
+    data.setdefault("words", [])
+    data.setdefault("segments", [])
     return data
 
 
@@ -75,28 +76,140 @@ def is_arc_complete(text):
     return bool(ARC_RE.search((text or "").strip()))
 
 
-def sentenceize(words, gap=1.2):
-    """Split a word list into sentences on terminal punctuation or >gap-second pauses."""
-    sentences, cur = [], []
-    for w in words:
-        if cur and (w["start"] - cur[-1]["end"]) > gap:
-            sentences.append(cur)
-            cur = []
-        cur.append(w)
-        if is_arc_complete(w["word"]):
-            sentences.append(cur)
-            cur = []
-    if cur:
-        sentences.append(cur)
-    out = []
-    for s in sentences:
-        out.append({
-            "start": s[0]["start"],
-            "end": s[-1]["end"],
-            "text": " ".join(w["word"] for w in s).strip(),
-            "words": s,
-        })
-    return out
+def sentenceize(words, gap=1.2, segments=None, max_group_duration=18.0):
+    """Group words using punctuation, pauses and Whisper chunk boundaries.
+
+    Whisper boundaries are soft complete-thought hints, not fixed-length clip
+    cuts. Long punctuation-free chunks are capped so they cannot swallow a
+    whole recording; those emergency splits remain marked incomplete.
+    """
+    if not words:
+        return []
+    segments = segments or []
+    bounds = [(float(s["start"]), float(s["end"])) for s in segments
+              if isinstance(s, dict) and "start" in s and "end" in s]
+    groups, cur = [], []
+    current_segment = None
+
+    def flush(complete, reason):
+        nonlocal cur
+        if not cur:
+            return
+        text = " ".join(w["word"] for w in cur).strip()
+        groups.append({"start": cur[0]["start"], "end": cur[-1]["end"],
+                       "text": text, "words": cur,
+                       "complete": complete or is_arc_complete(text),
+                       "boundary": reason})
+        cur = []
+
+    segment_pointer = 0
+    for word in words:
+        seg_index = None
+        if bounds:
+            while (segment_pointer + 1 < len(bounds) and
+                   word["start"] >= bounds[segment_pointer][1] - 0.05):
+                segment_pointer += 1
+            seg_index = segment_pointer
+        if cur:
+            pause = word["start"] - cur[-1]["end"] > gap
+            new_segment = seg_index is not None and current_segment is not None and seg_index != current_segment
+            at_limit = word["end"] - cur[0]["start"] > max_group_duration
+            if pause:
+                flush(True, "pause")
+            elif new_segment:
+                flush(True, "whisper_segment")
+            elif at_limit:
+                flush(False, "duration_limit")
+        cur.append(word)
+        current_segment = seg_index
+        if is_arc_complete(word["word"]):
+            flush(True, "punctuation")
+            current_segment = seg_index
+    flush(False, "end_of_transcript")
+    return groups
+
+
+def _group_complete(group):
+    return bool(group.get("complete", is_arc_complete(group["text"])))
+
+
+_LATIN_LANGUAGES = {"en", "yo", "ig", "ha", "pcm", "sw", "fr", "es", "pt", "de", "it"}
+
+
+def _script_counts(words):
+    counts = {}
+    for item in words:
+        for char in item.get("word", ""):
+            if not unicodedata.category(char).startswith("L"):
+                continue
+            name = unicodedata.name(char, "UNKNOWN")
+            script = name.split(" ", 1)[0] if name != "UNKNOWN" else "UNKNOWN"
+            counts[script] = counts.get(script, 0) + 1
+    return counts
+
+
+def speech_coverage(words, duration):
+    """Fraction of the source covered by the union of recognized word times."""
+    intervals = sorted((max(0.0, float(w["start"])), min(float(duration), float(w["end"])))
+                       for w in words if w.get("end", 0) > w.get("start", 0))
+    total = 0.0
+    if intervals:
+        start, end = intervals[0]
+        for a, b in intervals[1:]:
+            if a <= end:
+                end = max(end, b)
+            else:
+                total += end - start
+                start, end = a, b
+        total += end - start
+    return total / max(1.0, float(duration))
+
+
+def print_transcript_diagnostics(data, sentence_count):
+    """Log compact ASR health and coverage signals without transcript text."""
+    words = data.get("words", [])
+    segments = data.get("segments", [])
+    duration = float(data.get("duration") or 0)
+    language = data.get("language") or "unknown"
+    probability = data.get("language_probability")
+    confidence = f"{float(probability):.2f}" if isinstance(probability, (float, int)) else "n/a"
+    coverage = speech_coverage(words, duration)
+    rate = len(words) * 60.0 / max(1.0, duration)
+    print(f"Transcript diagnostics: duration={duration:.1f}s, language={language} "
+          f"(confidence={confidence}), words={len(words)}, ASR segments={len(segments)}, "
+          f"speech coverage={coverage:.1%}, sentence groups={sentence_count}.", flush=True)
+
+    metrics = {}
+    for key in ("avg_logprob", "no_speech_prob", "compression_ratio"):
+        values = [s.get("quality", {}).get(key) for s in segments
+                  if isinstance(s.get("quality", {}).get(key), (int, float))]
+        if values:
+            metrics[key] = sum(values) / len(values)
+    if metrics:
+        print("ASR quality averages: " + ", ".join(f"{k}={v:.2f}" for k, v in metrics.items()), flush=True)
+
+    scripts = _script_counts(words)
+    letters = sum(scripts.values())
+    if letters and len(scripts) > 1:
+        print("ASR script mix: " + ", ".join(f"{k}={v / letters:.0%}" for k, v in
+              sorted(scripts.items(), key=lambda item: item[1], reverse=True)), flush=True)
+    if data.get("expected_language") and language != data["expected_language"]:
+        print(f"ASR language warning: requested {data['expected_language']} but detected {language}.", flush=True)
+    dominant_script = max(scripts, key=scripts.get) if scripts else None
+    if language in _LATIN_LANGUAGES and dominant_script and dominant_script != "LATIN":
+        print(f"ASR language/script warning: {language} speech is usually written in Latin script, "
+              f"but transcript text is mostly {dominant_script}; transcription may be unreliable.", flush=True)
+    poor_quality = (metrics.get("avg_logprob", 0) < -1.0 or
+                    metrics.get("no_speech_prob", 0) > 0.6 or
+                    metrics.get("compression_ratio", 0) > 2.4)
+    if probability is not None and probability < 0.6:
+        print("ASR warning: language confidence is low; verify the transcript before trusting clip scores.", flush=True)
+    if poor_quality:
+        print("ASR warning: segment quality metrics indicate an unreliable transcript.", flush=True)
+    if not words or (len(words) < 20 and rate < 30):
+        print("Speech diagnostic: little speech was detected; the source may be sparse or ASR may have missed speech.", flush=True)
+    return {"coverage": coverage, "word_rate": rate, "poor_quality": poor_quality,
+            "script_mismatch": bool(language in _LATIN_LANGUAGES and dominant_script and dominant_script != "LATIN")}
 
 
 # ------------------------------------------------------------- heuristic core
@@ -114,7 +227,7 @@ def score_sentence(sent):
     low = " " + text.lower() + " "
     dur = max(0.1, sent["end"] - sent["start"])
     wps = len(sent["words"]) / dur
-    arc = 1.0 if is_arc_complete(text) else 0.55
+    arc = 1.0 if sent.get("complete", is_arc_complete(text)) else 0.55
     scores = {
         "hook": _cues(low, HOOK_CUES),
         "shock": _cues(low, SHOCK_CUES),
@@ -254,6 +367,11 @@ def _grow_window(sentences, seed, taken, min_len, max_len, av_features=None):
     clips that start or end mid-thought). Returns (seed, end_idx) or None."""
     n = len(sentences)
 
+    # If the seed is an emergency duration split inside a thought, start at
+    # the preceding group boundary so a candidate does not open mid-sentence.
+    while seed > 0 and not _group_complete(sentences[seed - 1]):
+        seed -= 1
+
     def span(a, b):
         return sentences[b]["end"] - sentences[a]["start"]
 
@@ -266,17 +384,16 @@ def _grow_window(sentences, seed, taken, min_len, max_len, av_features=None):
         j -= 1
     if span(seed, j) < min_len * 0.6:
         return None
-    # complete-thought rule: keep growing (within max_len) until the last
-    # sentence ends with terminal punctuation
-    while not is_arc_complete(sentences[j]["text"]) and j + 1 < n \
+    # Keep growing until the final group has a reliable boundary marker.
+    while not _group_complete(sentences[j]) and j + 1 < n \
             and not taken[j + 1] and span(seed, j + 1) <= max_len:
         if _is_natural_break(sentences[j], sentences[j + 1], av_features):
             break
         j += 1
     # still incomplete -> back off to the last complete sentence in the window
-    while j > seed and not is_arc_complete(sentences[j]["text"]):
+    while j > seed and not _group_complete(sentences[j]):
         j -= 1
-    if not is_arc_complete(sentences[j]["text"]):
+    if not _group_complete(sentences[j]):
         return None
     if span(seed, j) < min_len * 0.6:
         return None
@@ -289,7 +406,8 @@ def _make_segment(sentences, a, b, av_features=None):
     words = [w for s in win for w in s["words"]]
     text = " ".join(w["word"] for w in words)
     scores, _ = score_sentence({"start": win[0]["start"], "end": win[-1]["end"],
-                                "text": text, "words": words})
+                                "text": text, "words": words,
+                                "complete": _group_complete(win[-1])})
     # Preserve sharp moments inside a longer window. The whole-window average
     # can dilute a standout lyric, punchline, or emotional line; blend it with
     # the strongest sentence-level score rather than treating every second equally.
@@ -344,11 +462,19 @@ def build_candidates(sentences, min_len, max_len, max_clips, av_features=None):
     ranked_seeds = sorted(range(len(sentences)), key=lambda i: scored[i], reverse=True)
     # Keep strong dialogue seeds, but also sample the full timeline so quiet
     # lyrics or visually driven sequences can enter the AV shortlist.
-    temporal_count = max(1, max_clips * 5)
-    stride = max(1, len(sentences) // temporal_count)
-    temporal_seeds = list(range(0, len(sentences), stride))
-    priority_seeds = ranked_seeds[:max(1, max_clips * 3)]
-    order = list(dict.fromkeys(priority_seeds + temporal_seeds))
+    temporal_count = min(len(sentences), max(1, max_clips * 2))
+    temporal_seeds = sorted({round(i * (len(sentences) - 1) / max(1, temporal_count - 1))
+                             for i in range(temporal_count)})
+    priority_seeds = ranked_seeds[:max(1, max_clips * 2)]
+    # Interleave score-led and evenly-spaced seeds, so a shortlist capped by
+    # max_clips still includes candidate windows from later parts of the video.
+    order = []
+    for i in range(max(len(priority_seeds), len(temporal_seeds))):
+        if i < len(priority_seeds):
+            order.append(priority_seeds[i])
+        if i < len(temporal_seeds):
+            order.append(temporal_seeds[i])
+    order = list(dict.fromkeys(order))
     # Build overlapping alternatives: greedy "taken" suppression previously
     # removed nearby candidate moments before audiovisual ranking could compare
     # them. Deduplicate near-identical windows only, then let the caller rank
@@ -472,7 +598,7 @@ def print_candidate_diagnostics(candidates, selected, min_score, separation, lim
 
 def ollama_select(data, model, host, min_score, max_clips, min_len, max_len, timeout=1800):
     """Ask local Ollama for clips. Returns list of dicts, or None on any failure."""
-    sentences = sentenceize(data["words"])
+    sentences = sentenceize(data["words"], segments=data.get("segments"))
     if not sentences:
         return None
 
@@ -567,8 +693,11 @@ def run(workdir, llm=None, host=OLLAMA_HOST, min_score=None, max_clips=10,
     """
     workdir = Path(workdir)
     data = load_transcript(workdir)
-    sentences = sentenceize(data["words"])
-    print(f"Transcript: {len(sentences)} sentences over {data['duration']:.0f}s", flush=True)
+    sentences = sentenceize(data["words"], segments=data.get("segments"))
+    diagnostics = print_transcript_diagnostics(data, len(sentences))
+    if not sentences:
+        raise SystemExit("No clip candidates: ASR returned no word timestamps. "
+                         "The source may be silent/sparse or transcription may have failed.")
 
     mode = "heuristic"
     segments = None
@@ -603,6 +732,8 @@ def run(workdir, llm=None, host=OLLAMA_HOST, min_score=None, max_clips=10,
         # passage is not excluded merely because its lyrics score weakly.
         candidates = build_candidates(sentences, min_len, max_len,
                                       max(max_clips * 8, max_clips), av_features)
+        print(f"Candidate windows: {len(candidates)} complete windows from "
+              f"{len(sentences)} sentence groups.", flush=True)
         ranked_all = sorted(candidates, key=lambda s: s["overall"], reverse=True)
         ranked = [s for s in ranked_all if s["overall"] >= ms]
         # Avoid returning three neighbouring snippets from one sequence when
@@ -625,10 +756,17 @@ def run(workdir, llm=None, host=OLLAMA_HOST, min_score=None, max_clips=10,
     if not segments:
         if pick:
             raise SystemExit("Nothing to render: --clips removed every candidate.")
-        raise SystemExit(
-            "No usable clips found. No candidate met the quality threshold or "
-            "formed a complete clip window; inspect the candidate diagnostics above."
-        )
+        if 'candidates' in locals() and not candidates:
+            cause = "incomplete/short clip windows or no connected speech groups"
+        elif 'ranked_all' in locals() and ranked_all:
+            cause = f"candidates failed the {ms:.1f}/10 quality gate or spacing requirement"
+        elif diagnostics["poor_quality"] or diagnostics["script_mismatch"]:
+            cause = "ASR transcript quality or language/script mismatch"
+        elif len(data["words"]) < 20:
+            cause = "insufficient detected speech (sparse source or missed ASR speech)"
+        else:
+            cause = "no complete clip windows were available"
+        raise SystemExit(f"No usable clips: {cause}; inspect the compact diagnostics above.")
 
     print_table(segments)
     out = workdir / "segments.json"

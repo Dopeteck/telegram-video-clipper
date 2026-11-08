@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 import score_clips          # noqa: E402
+import download_and_transcribe  # noqa: E402
 import tighten              # noqa: E402
 import render_clips         # noqa: E402
 import chopify              # noqa: E402
@@ -64,6 +66,23 @@ class TestSentenceize:
         sents = score_clips.sentenceize(sample_words)
         total = sum(len(s["words"]) for s in sents)
         assert total == len(sample_words)
+
+    def test_whisper_boundaries_split_unpunctuated_conversation(self):
+        words = [make_word(word, i * 0.4) for i, word in enumerate(
+            "when you start a business you think the hardest part is finding customers "
+            "but the real lesson is learning why they leave and fixing that first".split())]
+        segments = [{"start": 0, "end": 5.0}, {"start": 5.0, "end": 10.0}]
+        groups = score_clips.sentenceize(words, segments=segments)
+        assert len(groups) == 2
+        assert groups[0]["boundary"] == "whisper_segment"
+        assert all(group["complete"] for group in groups)
+        assert sum(len(group["words"]) for group in groups) == len(words)
+
+    def test_long_unpunctuated_text_is_bounded_without_claiming_completeness(self):
+        words = [make_word("conversation", i * 0.4) for i in range(100)]
+        groups = score_clips.sentenceize(words, max_group_duration=8)
+        assert max(group["end"] - group["start"] for group in groups) <= 8.5
+        assert any(not group["complete"] for group in groups)
 
 
 class TestScoring:
@@ -153,6 +172,93 @@ class TestRun:
         (workdir / "transcript.json").write_bytes(b"\xef\xbb\xbf" + raw)
         segs, _ = score_clips.run(workdir, min_score=0)
         assert len(segs) >= 1
+
+    def test_sparse_asr_fails_gracefully_with_compact_diagnostics(self, workdir, capsys):
+        data = json.loads((workdir / "transcript.json").read_text())
+        data.update(words=[], segments=[], duration=54.4, language="en", language_probability=0.54)
+        (workdir / "transcript.json").write_text(json.dumps(data))
+        with pytest.raises(SystemExit, match="no word timestamps"):
+            score_clips.run(workdir)
+        output = capsys.readouterr().out
+        assert "duration=54.4s" in output
+        assert "language=en (confidence=0.54)" in output
+        assert "ASR segments=0" in output
+        assert "sparse or ASR may have missed" in output
+
+    def test_language_and_script_mismatch_are_reported(self, capsys):
+        words = [make_word("తెలుగు", i * 0.4) for i in range(8)]
+        data = {"duration": 12, "language": "yo", "language_probability": 0.98,
+                "expected_language": "en", "segments": [{"quality": {
+                    "avg_logprob": -0.4, "no_speech_prob": 0.1, "compression_ratio": 1.2}}],
+                "words": words}
+        result = score_clips.print_transcript_diagnostics(data, 1)
+        output = capsys.readouterr().out
+        assert "ASR language warning: requested en but detected yo" in output
+        assert "mostly TELUGU" in output
+        assert "avg_logprob=-0.40" in output
+        assert result["script_mismatch"]
+
+    def test_weak_candidates_still_fail_the_quality_gate(self, workdir, monkeypatch):
+        weak = {"start": 0.0, "end": 25.0, "hook": "ordinary conversation", "overall": 5.4,
+                "signals": {"transcript": 5.4}}
+        monkeypatch.setattr(score_clips, "build_candidates", lambda *a, **k: [weak])
+        with pytest.raises(SystemExit, match="5.5/10 quality gate"):
+            score_clips.run(workdir, min_len=20, max_len=30, min_score=5.5)
+
+    def test_unpunctuated_conversation_finds_distinct_windows_across_long_source(self):
+        words = []
+        segments = []
+        phrases = [
+            "the reason this matters is because your first idea is rarely your best idea",
+            "I learned the hard way that customers teach you what to build next",
+            "if you listen carefully you can turn every complaint into a useful lesson",
+        ]
+        for group_index in range(72):
+            start = group_index * 7.0
+            phrase = phrases[group_index % len(phrases)].split()
+            local_words = [make_word(word, start + i * 0.34) for i, word in enumerate(phrase)]
+            words.extend(local_words)
+            segments.append({"start": start, "end": local_words[-1]["end"] + 0.1})
+        groups = score_clips.sentenceize(words, segments=segments)
+        candidates = score_clips.build_candidates(groups, min_len=20, max_len=50, max_clips=24)
+        assert len(candidates) >= 6
+        starts = sorted({candidate["start"] for candidate in candidates})
+        assert starts[-1] - starts[0] > 300
+        assert all(candidate["end"] - candidate["start"] <= 50 for candidate in candidates)
+        for candidate in candidates:
+            final_group = next(group for group in groups
+                               if group["end"] == pytest.approx(candidate["end"]))
+            assert score_clips._group_complete(final_group)
+
+
+class TestTranscription:
+    def test_language_probability_and_quality_are_saved_without_logging_transcript(self, tmp_path, monkeypatch, capsys):
+        calls = {}
+
+        class Model:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def transcribe(self, video, **kwargs):
+                calls.update(kwargs)
+                word = SimpleNamespace(word="private words", start=0.2, end=1.0)
+                segment = SimpleNamespace(start=0.2, end=1.0, text="PRIVATE TRANSCRIPT",
+                    words=[word], avg_logprob=-0.3, no_speech_prob=0.1, compression_ratio=1.1)
+                return iter([segment]), SimpleNamespace(language="yo", language_probability=0.98,
+                                                         duration=4.0)
+
+        monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=Model))
+        video = tmp_path / "source.mp4"
+        video.write_bytes(b"video")
+        download_and_transcribe.transcribe(video, tmp_path, "small", "cpu", "int8", "yo")
+        data = json.loads((tmp_path / "transcript.json").read_text())
+        output = capsys.readouterr().out
+        assert calls["language"] == "yo"
+        assert data["language_probability"] == pytest.approx(0.98)
+        assert data["expected_language"] == "yo"
+        assert data["segments"][0]["quality"] == {
+            "avg_logprob": -0.3, "no_speech_prob": 0.1, "compression_ratio": 1.1}
+        assert "PRIVATE TRANSCRIPT" not in output
 
 
 # ----------------------------------------------------------------- tighten

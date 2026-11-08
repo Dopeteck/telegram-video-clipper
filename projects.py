@@ -15,6 +15,7 @@ from captions import update_transcript
 
 DEFAULT_OPTIONS = {"aspect": "16:9", "style": "default", "tighten": False,
                    "loudnorm": False, "whisper_model": "medium", "device": "cpu",
+                   "language": None,
                    "min_len": 20, "max_len": 75, "max_clips": 10, "min_score": None,
                    "llm": None, "search": None, "semantic": None,
                    "embed_model": "nomic-embed-text", "brand": None,
@@ -169,11 +170,13 @@ def run_project(path, action="all", preview=False, pick=None, resume=True, progr
                 state["cache"]["source"] = source_key
                 save_project(path, state)
             stage("transcribe")
-            transcript_key = digest([file_identity(source), options["whisper_model"], options["device"]])
+            transcript_key = digest([file_identity(source), options["whisper_model"],
+                                     options["device"], options["language"]])
             transcript_path = path / "transcript.json"
             if not resume or state["cache"].get("transcript") != transcript_key or not transcript_path.exists():
                 dt.transcribe(source, path, options["whisper_model"], options["device"],
-                              "int8" if options["device"] == "cpu" else "default")
+                              "int8" if options["device"] == "cpu" else "default",
+                              options["language"])
                 state["cache"]["transcript"] = transcript_key
                 state["source_identity"] = file_identity(source)
                 save_project(path, state)
