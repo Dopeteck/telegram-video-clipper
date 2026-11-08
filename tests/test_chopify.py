@@ -104,6 +104,13 @@ class TestSentenceize:
         assert group["boundary"] == "end_of_transcript"
         assert not group["complete"]
 
+    def test_final_whisper_punctuation_is_a_defensible_completion_signal(self):
+        words = [make_word(word, i * 0.4) for i, word in enumerate("we finished the work".split())]
+        segment = {"start": 0, "end": words[-1]["end"] + 0.05, "text": "We finished the work."}
+        group = score_clips.sentenceize(words, segments=[segment])[-1]
+        assert group["boundary"] == "whisper_segment"
+        assert group["complete"]
+
     def test_long_unpunctuated_text_is_bounded_without_claiming_completeness(self):
         words = [make_word("conversation", i * 0.4) for i in range(100)]
         groups = score_clips.sentenceize(words, max_group_duration=8)
