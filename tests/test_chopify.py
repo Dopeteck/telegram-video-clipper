@@ -118,6 +118,21 @@ class TestSentenceize:
         assert any(not group["complete"] for group in groups)
 
 
+class TestPauseCompletion:
+    @pytest.mark.parametrize(("pause", "expected"), [(3.4, False), (3.5, True)])
+    def test_long_pause_threshold_after_clause_like_phrase(self, pause, expected):
+        words = sentence("we learned an important lesson from that experience", 0)
+        assert score_clips._pause_suggests_completion(words, pause) is expected
+
+    @pytest.mark.parametrize("tail", ["dey", "wey", "make", "because"])
+    def test_long_pause_after_open_pidgin_or_conversational_tail_is_incomplete(self, tail):
+        words = sentence(f"we dey try understand wetin happen {tail}", 0)
+        next_word = make_word("then", words[-1]["end"] + 4.0)
+        groups = score_clips.sentenceize(words + [next_word])
+        assert groups[0]["boundary"] == "pause"
+        assert not groups[0]["complete"]
+
+
 class TestScoring:
     def test_hook_sentence_scores_higher(self, sample_words):
         sents = score_clips.sentenceize(sample_words)

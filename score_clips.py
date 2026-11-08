@@ -84,7 +84,7 @@ INCOMPLETE_TAILS = {
     "is", "are", "was", "were", "am", "be", "been", "being", "have", "has",
     "had", "do", "does", "did", "can", "could", "will", "would", "should",
     "might", "must", "learned", "think", "thought", "know", "feel", "believe",
-    "want", "need", "trying", "going",
+    "want", "need", "trying", "going", "dey", "wey", "make",
 }
 
 
