@@ -63,25 +63,34 @@ def _download(url, workdir):
     return vids[0].resolve()
 
 
-def transcribe(video, workdir, model_size, device, compute_type):
+def transcribe(video, workdir, model_size, device, compute_type, language=None):
     from faster_whisper import WhisperModel
     print(f"Loading faster-whisper model={model_size} device={device} "
           f"compute={compute_type} (first run downloads the model)...", flush=True)
     model = WhisperModel(model_size, device=device, compute_type=compute_type)
-    segments, info = model.transcribe(str(video), word_timestamps=True, vad_filter=True)
+    segments, info = model.transcribe(str(video), word_timestamps=True, vad_filter=True,
+                                      language=language)
     print(f"Detected language: {info.language} "
           f"(p={info.language_probability:.2f}), audio {info.duration:.1f}s", flush=True)
 
     seg_list, words = [], []
     for seg in segments:
-        seg_list.append({"start": seg.start, "end": seg.end, "text": seg.text})
+        quality = {}
+        for name in ("avg_logprob", "no_speech_prob", "compression_ratio"):
+            value = getattr(seg, name, None)
+            if value is not None:
+                quality[name] = float(value)
+        seg_list.append({"start": seg.start, "end": seg.end, "text": seg.text,
+                         "quality": quality})
         for w in (seg.words or []):
             words.append({"word": w.word, "start": w.start, "end": w.end})
-        print(f"[{seg.start:7.2f} -> {seg.end:7.2f}] {seg.text}", flush=True)
+        # Keep GitHub Actions logs useful without printing private transcript text.
 
     transcript = {
         "video": str(video),
         "language": info.language,
+        "language_probability": getattr(info, "language_probability", None),
+        "expected_language": language,
         "duration": info.duration,
         "model": model_size,
         "segments": seg_list,
@@ -101,6 +110,8 @@ def main():
                     help="faster-whisper model: tiny/base/small/medium/large-v3")
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--compute-type", default="int8")
+    ap.add_argument("--language", default=None,
+                    help="expected spoken language code (for example en, yo, or pcm); default auto-detect")
     args = ap.parse_args()
 
     workdir = Path(args.workdir)
@@ -108,7 +119,7 @@ def main():
 
     video = resolve_source(args.url, workdir)
     print("Downloaded:", video, flush=True)
-    transcribe(video, workdir, args.model, args.device, args.compute_type)
+    transcribe(video, workdir, args.model, args.device, args.compute_type, args.language)
     print("STAGE 1 COMPLETE", flush=True)
 
 

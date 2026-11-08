@@ -91,11 +91,13 @@ def test_resume_reuses_stages_and_invalidates_changed_settings(tmp_path, monkeyp
     import projects
     source = tmp_path / "video.mp4"
     source.write_bytes(b"video")
-    project = projects.create_project(tmp_path / "projects", str(source), {"min_len": 1})
+    project = projects.create_project(tmp_path / "projects", str(source),
+                                      {"min_len": 1, "language": "pcm"})
     path = projects.project_path(tmp_path / "projects", project["id"])
     calls = []
     def transcribe(video, workdir, *args):
         calls.append("transcribe")
+        assert args[-1] == "pcm"
         data = transcript()
         data["video"] = str(video)
         (workdir / "transcript.json").write_text(json.dumps(data))

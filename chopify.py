@@ -113,6 +113,8 @@ def main():
     ap.add_argument("--max-len", type=int, default=75, help="max clip seconds")
     ap.add_argument("--whisper-model", default="medium",
                     help="faster-whisper size: tiny/base/small/medium/large-v3")
+    ap.add_argument("--language", default=None,
+                    help="expected spoken language code (for example en, yo, or pcm); default auto-detect")
     ap.add_argument("--no-preflight", action="store_true",
                     help="skip the environment check (ffmpeg, packages, ...)")
     ap.add_argument("--project", help="resume an existing project directory")
