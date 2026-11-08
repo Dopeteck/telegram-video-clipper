@@ -69,14 +69,40 @@ class TestSentenceize:
 
     def test_whisper_boundaries_split_unpunctuated_conversation(self):
         words = [make_word(word, i * 0.4) for i, word in enumerate(
-            "when you start a business you think the hardest part is finding customers "
-            "but the real lesson is learning why they leave and fixing that first".split())]
-        segments = [{"start": 0, "end": 5.0}, {"start": 5.0, "end": 10.0}]
+            "the main reason we made this change is because the results improved".split())]
+        segments = [{"start": 0, "end": 2.35}, {"start": 2.4, "end": 4.0}]
         groups = score_clips.sentenceize(words, segments=segments)
         assert len(groups) == 2
         assert groups[0]["boundary"] == "whisper_segment"
-        assert all(group["complete"] for group in groups)
+        assert not groups[0]["complete"]  # boundary follows "because" mid-thought
+        assert not groups[-1]["complete"]  # recording end is not a completion signal
         assert sum(len(group["words"]) for group in groups) == len(words)
+
+    def test_pause_inside_sentence_is_only_a_grouping_boundary(self):
+        words = [make_word(word, i * 0.4) for i, word in enumerate(
+            "I thought the whole thing might work because then customers would come".split())]
+        pause_after = 6
+        for word in words[pause_after + 1:]:
+            word["start"] += 1.5
+            word["end"] += 1.5
+        groups = score_clips.sentenceize(words)
+        assert groups[0]["boundary"] == "pause"
+        assert not groups[0]["complete"]
+
+    def test_punctuation_remains_a_complete_thought_signal(self):
+        words = [make_word(word, i * 0.4) for i, word in enumerate(
+            "that is why this works.".split())]
+        group = score_clips.sentenceize(words)[0]
+        assert group["complete"]
+        assert group["boundary"] == "punctuation"
+
+    def test_final_unpunctuated_whisper_segment_is_not_complete(self):
+        words = [make_word(word, i * 0.4) for i, word in enumerate(
+            "and then we started to realize".split())]
+        segment = {"start": 0, "end": words[-1]["end"] + 0.05, "text": "and then we started to realize"}
+        group = score_clips.sentenceize(words, segments=[segment])[-1]
+        assert group["boundary"] == "end_of_transcript"
+        assert not group["complete"]
 
     def test_long_unpunctuated_text_is_bounded_without_claiming_completeness(self):
         words = [make_word("conversation", i * 0.4) for i in range(100)]
@@ -198,6 +224,20 @@ class TestRun:
         assert "avg_logprob=-0.40" in output
         assert result["script_mismatch"]
 
+    def test_small_telugu_prefix_in_latin_pidgin_is_reported_without_transcript(self, capsys):
+        telugu = [make_word("తెలుగు", i * 0.3) for i in range(12)]
+        pidgin_words = "na wetin we dey talk about because plenty people no get the chance to learn this early".split()
+        latin = [make_word(word, 5 + i * 0.3) for i, word in enumerate(pidgin_words * 8)]
+        words = telugu + latin
+        data = {"duration": 80, "language": "yo", "language_probability": 0.98,
+                "segments": [{"quality": {}}] * 5, "words": words}
+        result = score_clips.print_transcript_diagnostics(data, 20)
+        output = capsys.readouterr().out
+        assert "ASR script anomaly: mixed scripts" in output
+        assert "TELUGU=" in output and "LATIN=" in output
+        assert "na wetin we dey talk" not in output
+        assert result["script_mismatch"]
+
     def test_weak_candidates_still_fail_the_quality_gate(self, workdir, monkeypatch):
         weak = {"start": 0.0, "end": 25.0, "hook": "ordinary conversation", "overall": 5.4,
                 "signals": {"transcript": 5.4}}
@@ -214,7 +254,7 @@ class TestRun:
             "if you listen carefully you can turn every complaint into a useful lesson",
         ]
         for group_index in range(72):
-            start = group_index * 7.0
+            start = group_index * 9.0
             phrase = phrases[group_index % len(phrases)].split()
             local_words = [make_word(word, start + i * 0.34) for i, word in enumerate(phrase)]
             words.extend(local_words)

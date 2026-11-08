@@ -76,6 +76,26 @@ def is_arc_complete(text):
     return bool(ARC_RE.search((text or "").strip()))
 
 
+INCOMPLETE_TAILS = {
+    "a", "an", "the", "and", "but", "or", "because", "if", "when", "while",
+    "although", "that", "which", "who", "whom", "whose", "to", "for", "of",
+    "with", "from", "at", "in", "on", "by", "as", "than", "so", "my",
+    "your", "our", "their", "his", "her", "its", "this", "these", "those",
+    "is", "are", "was", "were", "am", "be", "been", "being", "have", "has",
+    "had", "do", "does", "did", "can", "could", "will", "would", "should",
+    "might", "must", "learned", "think", "thought", "know", "feel", "believe",
+    "want", "need", "trying", "going",
+}
+
+
+def _pause_suggests_completion(words, pause):
+    """Treat only a pronounced pause after a clause-like tail as weak evidence."""
+    if pause < 3.5 or len(words) < 6:
+        return False
+    tail = re.sub(r"[^\w']", "", words[-1]["word"].lower())
+    return bool(tail) and tail not in INCOMPLETE_TAILS
+
+
 def sentenceize(words, gap=1.2, segments=None, max_group_duration=18.0):
     """Group words using punctuation, pauses and Whisper chunk boundaries.
 
@@ -86,8 +106,8 @@ def sentenceize(words, gap=1.2, segments=None, max_group_duration=18.0):
     if not words:
         return []
     segments = segments or []
-    bounds = [(float(s["start"]), float(s["end"])) for s in segments
-              if isinstance(s, dict) and "start" in s and "end" in s]
+    bounds = [(float(s["start"]), float(s["end"]), is_arc_complete(s.get("text", "")))
+              for s in segments if isinstance(s, dict) and "start" in s and "end" in s]
     groups, cur = [], []
     current_segment = None
 
@@ -111,13 +131,14 @@ def sentenceize(words, gap=1.2, segments=None, max_group_duration=18.0):
                 segment_pointer += 1
             seg_index = segment_pointer
         if cur:
-            pause = word["start"] - cur[-1]["end"] > gap
+            pause = word["start"] - cur[-1]["end"]
             new_segment = seg_index is not None and current_segment is not None and seg_index != current_segment
             at_limit = word["end"] - cur[0]["start"] > max_group_duration
-            if pause:
-                flush(True, "pause")
+            previous_segment_complete = (new_segment and bounds[current_segment][2])
+            if pause > gap:
+                flush(previous_segment_complete or _pause_suggests_completion(cur, pause), "pause")
             elif new_segment:
-                flush(True, "whisper_segment")
+                flush(previous_segment_complete, "whisper_segment")
             elif at_limit:
                 flush(False, "duration_limit")
         cur.append(word)
@@ -125,9 +146,7 @@ def sentenceize(words, gap=1.2, segments=None, max_group_duration=18.0):
         if is_arc_complete(word["word"]):
             flush(True, "punctuation")
             current_segment = seg_index
-    final_segment_boundary = (bool(cur) and current_segment is not None and bounds and
-                              abs(cur[-1]["end"] - bounds[current_segment][1]) <= 0.75)
-    flush(final_segment_boundary, "whisper_segment" if final_segment_boundary else "end_of_transcript")
+    flush(False, "end_of_transcript")
     return groups
 
 
@@ -192,6 +211,9 @@ def print_transcript_diagnostics(data, sentence_count):
 
     scripts = _script_counts(words)
     letters = sum(scripts.values())
+    non_latin = sum(count for script, count in scripts.items() if script != "LATIN")
+    script_anomaly = (non_latin >= 5 and letters and non_latin / letters >= 0.005 and
+                      "LATIN" in scripts)
     if letters and len(scripts) > 1:
         print("ASR script mix: " + ", ".join(f"{k}={v / letters:.0%}" for k, v in
               sorted(scripts.items(), key=lambda item: item[1], reverse=True)), flush=True)
@@ -201,6 +223,11 @@ def print_transcript_diagnostics(data, sentence_count):
     if language in _LATIN_LANGUAGES and dominant_script and dominant_script != "LATIN":
         print(f"ASR language/script warning: {language} speech is usually written in Latin script, "
               f"but transcript text is mostly {dominant_script}; transcription may be unreliable.", flush=True)
+    if script_anomaly:
+        mix = ", ".join(f"{name}={count / letters:.0%}" for name, count in
+                         sorted(scripts.items(), key=lambda item: item[1], reverse=True))
+        print(f"ASR script anomaly: mixed scripts in detected {language} transcript ({mix}); "
+              "an early language/transcription mismatch is possible.", flush=True)
     poor_quality = (metrics.get("avg_logprob", 0) < -1.0 or
                     metrics.get("no_speech_prob", 0) > 0.6 or
                     metrics.get("compression_ratio", 0) > 2.4)
@@ -211,7 +238,8 @@ def print_transcript_diagnostics(data, sentence_count):
     if not words or (len(words) < 20 and rate < 30):
         print("Speech diagnostic: little speech was detected; the source may be sparse or ASR may have missed speech.", flush=True)
     return {"coverage": coverage, "word_rate": rate, "poor_quality": poor_quality,
-            "script_mismatch": bool(language in _LATIN_LANGUAGES and dominant_script and dominant_script != "LATIN")}
+            "script_mismatch": bool(script_anomaly or
+                                    (language in _LATIN_LANGUAGES and dominant_script and dominant_script != "LATIN"))}
 
 
 # ------------------------------------------------------------- heuristic core
