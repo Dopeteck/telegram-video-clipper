@@ -125,7 +125,9 @@ def sentenceize(words, gap=1.2, segments=None, max_group_duration=18.0):
         if is_arc_complete(word["word"]):
             flush(True, "punctuation")
             current_segment = seg_index
-    flush(False, "end_of_transcript")
+    final_segment_boundary = (bool(cur) and current_segment is not None and bounds and
+                              abs(cur[-1]["end"] - bounds[current_segment][1]) <= 0.75)
+    flush(final_segment_boundary, "whisper_segment" if final_segment_boundary else "end_of_transcript")
     return groups
 
 
