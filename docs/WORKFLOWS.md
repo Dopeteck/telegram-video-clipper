@@ -46,6 +46,38 @@ python chopify.py --project projects/PROJECT_ID --action all
 Relative paths resolve from the current working directory. Batch output stays
 in each project folder; `--out` applies to single-project runs.
 
+## Remote YouTube source
+
+Paste a YouTube URL in Studio's **Remote YouTube URL** field (alongside local
+paths), or pass it directly to the CLI:
+
+```powershell
+python chopify.py "https://www.youtube.com/watch?v=VIDEO_ID" --aspect 9:16 --blur-fill
+```
+
+YouTube sources are handled metadata-first:
+
+1. **Ingest.** `yt-dlp` reads the video metadata (duration, title) without downloading
+   anything. English subtitles — manual first, then auto-generated — are downloaded
+   as `.srt` only (typically a few hundred kilobytes for a long video). The complete
+   source file is never downloaded at this stage, so a multi-GB source does not
+   pass through any upload service.
+2. **Transcript.** Subtitle segments become the transcript used for scoring and
+   candidate selection. You review and approve every timestamp range before anything
+   is rendered.
+3. **Extraction.** Only your approved ranges are extracted directly from the
+   remote YouTube source using `yt-dlp` section downloading with a 1080p maximum
+   resolution. The complete source file is never downloaded. Section files are
+   removed after each clip renders; failed sections retry individually without
+   restarting the job. If remote section extraction fails, the error is reported
+   clearly — it does not silently fall back to downloading the full source.
+4. **Render.** Each section is transcribed with faster-whisper for accurate
+   word-level captions and rendered as a vertical 1080 × 1920 clip with original
+   speaker audio. Nothing is auto-published.
+
+Rate limits, bot checks and expired URLs are reported as failed jobs with a clear
+message; retry the project later or add cookies via your yt-dlp configuration.
+
 ## Resume and stage invalidation
 
 Each `project.json` records the source, options, status, stage, successful stage

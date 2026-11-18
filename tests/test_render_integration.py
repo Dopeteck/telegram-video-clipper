@@ -104,3 +104,21 @@ def test_cli_render_preserves_project_settings_and_copies_exports(source, tmp_pa
     assert result.returncode == 0, result.stderr + result.stdout
     assert projects.read_project(path)["options"]["layout"] == "split"
     assert len(list(export.glob("*.mp4"))) == len(list(export.glob("*.srt"))) == 1
+
+
+def test_blur_fill_render_is_vertical_with_captions(source, tmp_path):
+    words = [{"word": "Hello", "start": 0.5, "end": 1.0},
+             {"word": "world", "start": 1.1, "end": 2.0}]
+    out_dir = tmp_path / "blur output"
+    out_dir.mkdir()
+    out = render_clips.render({"id": "001", "start": 0.5, "end": 2.5, "hook": "blur test"},
+        words, source, 640, 360, tmp_path, "9:16",
+        out_dir=out_dir, blur_fill=True)
+    streams = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-of", "json",
+                                         str(out)], capture_output=True, text=True, check=True).stdout)["streams"]
+    video = next(s for s in streams if s["codec_type"] == "video")
+    assert (video["width"], video["height"]) == (1080, 1920)
+    assert video["pix_fmt"] == "yuv420p"
+    assert any(s["codec_name"] == "aac" for s in streams)
+    assert out.with_suffix(".srt").is_file()
+    assert "Hello" in out.with_suffix(".srt").read_text()

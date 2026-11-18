@@ -1,0 +1,1759 @@
+diff -ruN '--exclude=node_modules' '--exclude=dist' '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=package-lock.json' /tmp/orig/telegram-video-clipper-main/.github/workflows/ci.yml telegram-video-clipper-main/.github/workflows/ci.yml
+--- a/.github/workflows/ci.yml	2026-11-03 15:08:59.000000000 +0000
++++ b/.github/workflows/ci.yml	2026-11-03 20:32:32.251500019 +0000
+@@ -90,6 +90,10 @@
+         working-directory: ./miniapp
+         run: npx tsc --noEmit
+ 
++      - name: Run miniapp tests
++        working-directory: ./miniapp
++        run: npm test
++
+       - name: Build miniapp
+         working-directory: ./miniapp
+         run: npm run build
+diff -ruN '--exclude=node_modules' '--exclude=dist' '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=package-lock.json' /tmp/orig/telegram-video-clipper-main/.github/workflows/process-video.yml telegram-video-clipper-main/.github/workflows/process-video.yml
+--- a/.github/workflows/process-video.yml	2026-11-03 15:08:59.000000000 +0000
++++ b/.github/workflows/process-video.yml	2026-11-03 20:32:53.409318532 +0000
+@@ -27,6 +27,11 @@
+   WORKER_SECRET: ${{ secrets.WORKER_SECRET }}
+   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+ 
++# NOTE on step outputs: every `python` step below writes its step outputs
++# explicitly to the file named by $GITHUB_OUTPUT as `key=value` lines. Printing
++# to stdout is for logs only. (Piping stdout into $GITHUB_OUTPUT makes the runner
++# reject any log line that is not `key=value` with "Invalid format".)
++
+ jobs:
+   process:
+     runs-on: ubuntu-latest
+@@ -35,6 +40,18 @@
+       - name: Checkout repository
+         uses: actions/checkout@v4
+ 
++      - name: Check dispatch payload
++        env:
++          JOB_ID: ${{ github.event.client_payload.job_id }}
++          UPLOAD_ID: ${{ github.event.client_payload.upload_id }}
++          OBJECT_KEY: ${{ github.event.client_payload.object_key }}
++        run: |
++          echo "event=${{ github.event_name }} job_id=${JOB_ID} upload_id=${UPLOAD_ID}"
++          if [ -z "$JOB_ID" ] || [ -z "$UPLOAD_ID" ] || [ -z "$OBJECT_KEY" ]; then
++            echo "::error::Missing job_id/upload_id/object_key in client_payload. This workflow must be triggered by the Worker's repository_dispatch (event_type process-video)."
++            exit 1
++          fi
++
+       - name: Set up Python
+         uses: actions/setup-python@v5
+         with:
+@@ -52,84 +69,84 @@
+           pip install -r requirements.txt -r requirements-dev.txt
+           pip install boto3 requests
+ 
++      - name: Report job started
++        env:
++          JOB_ID: ${{ github.event.client_payload.job_id }}
++        run: |
++          python - <<'PY'
++          import os
++          import requests
++
++          job_id = os.environ['JOB_ID']
++          worker_url = os.environ['WORKER_URL']
++          run_url = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
++
++          response = requests.post(
++              f'{worker_url}/api/internal/jobs/{job_id}/complete',
++              headers={'Authorization': f"Bearer {os.environ['WORKER_SECRET']}", 'Content-Type': 'application/json'},
++              json={'clips': [], 'status': 'processing', 'github_run_url': run_url},
++              timeout=30,
++          )
++          print(f'Report started: {response.status_code} {response.text}')
++          response.raise_for_status()
++          PY
++
+       - name: Download video from R2
+         id: download
+         env:
+-          JOB_ID: ${{ github.event.client_payload.job_id }}
+-          UPLOAD_ID: ${{ github.event.client_payload.upload_id }}
+           OBJECT_KEY: ${{ github.event.client_payload.object_key }}
+         run: |
+-          python -c "
+-import os
+-import boto3
+-from botocore.config import Config
+-
+-job_id = os.environ['JOB_ID']
+-upload_id = os.environ['UPLOAD_ID']
+-object_key = os.environ['OBJECT_KEY']
+-
+-s3 = boto3.client(
+-    's3',
+-    endpoint_url=f'https://{os.environ[\"R2_ACCOUNT_ID\"]}.r2.cloudflarestorage.com',
+-    aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
+-    aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
+-    config=Config(signature_version='s3v4'),
+-    region_name='auto'
+-)
+-
+-local_path = f'/tmp/{os.path.basename(object_key)}'
+-print(f'Downloading {object_key} to {local_path}')
+-s3.download_file(os.environ['R2_BUCKET'], object_key, local_path)
+-print(f'Downloaded {os.path.getsize(local_path)} bytes')
+-print(f'video_path={local_path}')
+-          " >> $GITHUB_OUTPUT
++          python - <<'PY'
++          import os
++          import boto3
++          from botocore.config import Config
++
++          object_key = os.environ['OBJECT_KEY']
++
++          s3 = boto3.client(
++              's3',
++              endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
++              aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
++              aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
++              config=Config(signature_version='s3v4'),
++              region_name='auto',
++          )
++
++          local_path = f'/tmp/{os.path.basename(object_key)}'
++          print(f'Downloading {object_key} to {local_path}')
++          s3.download_file(os.environ['R2_BUCKET'], object_key, local_path)
++          print(f'Downloaded {os.path.getsize(local_path)} bytes')
++
++          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
++              out.write(f'video_path={local_path}\n')
++          PY
+ 
+       - name: Get job preferences
+         id: prefs
+         env:
+           JOB_ID: ${{ github.event.client_payload.job_id }}
+         run: |
+-          python -c "
+-import os
+-import requests
+-import json
+-
+-job_id = os.environ['JOB_ID']
+-worker_url = os.environ['WORKER_URL']
+-worker_secret = os.environ['WORKER_SECRET']
+-
+-headers = {'Authorization': f'Bearer {worker_secret}'}
+-response = requests.get(f'{worker_url}/api/internal/jobs/{job_id}', headers=headers)
+-job = response.json()['data']
+-
+-print(f'Job: {json.dumps(job)}')
+-print(f'aspect_ratio={job.get("aspect_ratio", "9:16")}')
+-print(f'style={job.get("style", "default")}')
+-print(f'enable_tighten={job.get("enable_tighten", 0)}')
+-print(f'enable_loudnorm={job.get("enable_loudnorm", 0)}')
+-          " >> $GITHUB_OUTPUT
+-
+-      - name: Report job started
+-        env:
+-          JOB_ID: ${{ github.event.client_payload.job_id }}
+-        run: |
+-          python -c "
+-import os
+-import requests
+-import json
+-
+-job_id = os.environ['JOB_ID']
+-worker_url = os.environ['WORKER_URL']
+-worker_secret = os.environ['WORKER_SECRET']
+-
+-headers = {'Authorization': f'Bearer {worker_secret}', 'Content-Type': 'application/json'}
+-response = requests.post(
+-    f'{worker_url}/api/internal/jobs/{job_id}/complete',
+-    headers=headers,
+-    json={'clips': [], 'status': 'processing'}
+-)
+-print(f'Report started: {response.status_code}')
+-          "
++          python - <<'PY'
++          import os
++          import json
++          import requests
++
++          job_id = os.environ['JOB_ID']
++          response = requests.get(
++              f"{os.environ['WORKER_URL']}/api/internal/jobs/{job_id}",
++              headers={'Authorization': f"Bearer {os.environ['WORKER_SECRET']}"},
++              timeout=30,
++          )
++          response.raise_for_status()
++          job = response.json()['data']
++          print(f'Job: {json.dumps(job)}')
++
++          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
++              out.write(f"aspect_ratio={job.get('aspect_ratio') or '9:16'}\n")
++              out.write(f"style={job.get('caption_style') or 'default'}\n")
++              out.write(f"enable_tighten={job.get('enable_tighten') or 0}\n")
++              out.write(f"enable_loudnorm={job.get('enable_loudnorm') or 0}\n")
++          PY
+ 
+       - name: Run Chopify processing
+         id: chopify
+@@ -141,54 +158,53 @@
+           ENABLE_LOUDNORM: ${{ steps.prefs.outputs.enable_loudnorm }}
+           JOB_ID: ${{ github.event.client_payload.job_id }}
+         run: |
+-          python -c "
+-import os
+-import subprocess
+-import json
+-
+-video_path = os.environ['VIDEO_PATH']
+-aspect_ratio = os.environ['ASPECT_RATIO']
+-style = os.environ['STYLE']
+-enable_tighten = os.environ['ENABLE_TIGHTEN'] == '1'
+-enable_loudnorm = os.environ['ENABLE_LOUDNORM'] == '1'
+-job_id = os.environ['JOB_ID']
+-
+-work_dir = f'/tmp/chopify_work_{job_id}'
+-os.makedirs(work_dir, exist_ok=True)
+-out_dir = f'{work_dir}/clips'
+-os.makedirs(out_dir, exist_ok=True)
+-
+-cmd = [
+-    'python', 'chopify.py', video_path,
+-    '--aspect', aspect_ratio,
+-    '--style', style,
+-    '--workdir', work_dir,
+-    '--out', out_dir,
+-    '--action', 'all',
+-    '--no-preflight'
+-]
+-
+-if enable_tighten:
+-    cmd.append('--tighten')
+-if enable_loudnorm:
+-    cmd.append('--loudnorm')
+-
+-print(f'Running: {\" \".join(cmd)}')
+-result = subprocess.run(cmd, capture_output=True, text=True, cwd='.')
+-print(f'stdout: {result.stdout}')
+-print(f'stderr: {result.stderr}')
+-print(f'returncode: {result.returncode}')
+-
+-if result.returncode != 0:
+-    exit(1)
+-
+-clips = []
+-for f in os.listdir(out_dir):
+-    if f.endswith('.mp4'):
+-        clips.append(os.path.join(out_dir, f))
+-
+-print(f'clips={json.dumps(clips)}')
+-          " >> $GITHUB_OUTPUT
++          python - <<'PY'
++          import os
++          import subprocess
++          import sys
++          import json
++
++          video_path = os.environ['VIDEO_PATH']
++          aspect_ratio = os.environ['ASPECT_RATIO']
++          style = os.environ['STYLE']
++          enable_tighten = os.environ['ENABLE_TIGHTEN'] == '1'
++          enable_loudnorm = os.environ['ENABLE_LOUDNORM'] == '1'
++          job_id = os.environ['JOB_ID']
++
++          work_dir = f'/tmp/chopify_work_{job_id}'
++          os.makedirs(work_dir, exist_ok=True)
++          out_dir = f'{work_dir}/clips'
++          os.makedirs(out_dir, exist_ok=True)
++
++          cmd = [
++              'python', 'chopify.py', video_path,
++              '--aspect', aspect_ratio,
++              '--style', style,
++              '--workdir', work_dir,
++              '--out', out_dir,
++              '--action', 'all',
++              '--no-preflight',
++          ]
++          if enable_tighten:
++              cmd.append('--tighten')
++          if enable_loudnorm:
++              cmd.append('--loudnorm')
++
++          print('Running: ' + ' '.join(cmd))
++          result = subprocess.run(cmd, capture_output=True, text=True, cwd='.')
++          print(f'stdout: {result.stdout}')
++          print(f'stderr: {result.stderr}')
++          print(f'returncode: {result.returncode}')
++
++          if result.returncode != 0:
++              sys.exit(1)
++
++          clips = [os.path.join(out_dir, f) for f in sorted(os.listdir(out_dir)) if f.endswith('.mp4')]
++          print(f'Found {len(clips)} clip(s)')
++
++          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
++              out.write(f'clips={json.dumps(clips)}\n')
++          PY
+ 
+       - name: Upload clips to R2
+         id: upload
+@@ -196,58 +212,69 @@
+           JOB_ID: ${{ github.event.client_payload.job_id }}
+           CLIPS_JSON: ${{ steps.chopify.outputs.clips }}
+         run: |
+-          python -c "
+-import os
+-import boto3
+-import json
+-from botocore.config import Config
+-
+-clips = json.loads(os.environ['CLIPS_JSON'])
+-job_id = os.environ['JOB_ID']
+-
+-s3 = boto3.client(
+-    's3',
+-    endpoint_url=f'https://{os.environ[\"R2_ACCOUNT_ID\"]}.r2.cloudflarestorage.com',
+-    aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
+-    aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
+-    config=Config(signature_version='s3v4'),
+-    region_name='auto'
+-)
+-
+-uploaded = []
+-for clip in clips:
+-    key = f'jobs/{job_id}/{os.path.basename(clip)}'
+-    s3.upload_file(clip, os.environ['R2_BUCKET'], key)
+-    uploaded.append(key)
+-    print(f'Uploaded {clip} to {key}')
+-
+-print(f'uploaded={json.dumps(uploaded)}')
+-          " >> $GITHUB_OUTPUT
++          python - <<'PY'
++          import os
++          import json
++          import boto3
++          from botocore.config import Config
++
++          clips = json.loads(os.environ.get('CLIPS_JSON') or '[]')
++          job_id = os.environ['JOB_ID']
++
++          s3 = boto3.client(
++              's3',
++              endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
++              aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
++              aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
++              config=Config(signature_version='s3v4'),
++              region_name='auto',
++          )
++
++          uploaded = []
++          for clip in clips:
++              key = f'jobs/{job_id}/{os.path.basename(clip)}'
++              s3.upload_file(clip, os.environ['R2_BUCKET'], key)
++              uploaded.append(key)
++              print(f'Uploaded {clip} to {key}')
++
++          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
++              out.write(f'uploaded={json.dumps(uploaded)}\n')
++          PY
+ 
+       - name: Report completion to Worker
+         if: always()
+         env:
+           JOB_ID: ${{ github.event.client_payload.job_id }}
+           CLIPS_JSON: ${{ steps.upload.outputs.uploaded }}
+-          CHOPIFY_SUCCESS: ${{ steps.chopify.conclusion == 'success' }}
++          CHOPIFY_OUTCOME: ${{ steps.chopify.outcome }}
++          UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
+         run: |
+-          python -c "
+-import os
+-import requests
+-import json
+-
+-job_id = os.environ['JOB_ID']
+-worker_url = os.environ['WORKER_URL']
+-worker_secret = os.environ['WORKER_SECRET']
+-
+-clips = json.loads(os.environ['CLIPS_JSON']) if os.environ['CLIPS_JSON'] else []
+-success = os.environ['CHOPIFY_SUCCESS'] == 'True'
+-
+-headers = {'Authorization': f'Bearer {worker_secret}', 'Content-Type': 'application/json'}
+-response = requests.post(
+-    f'{worker_url}/api/internal/jobs/{job_id}/complete',
+-    headers=headers,
+-    json={'clips': clips, 'status': 'completed' if success else 'failed'}
+-)
+-print(f'Report completion: {response.status_code} {response.text}')
+-          "
+\ No newline at end of file
++          python - <<'PY'
++          import os
++          import json
++          import sys
++          import requests
++
++          job_id = os.environ['JOB_ID']
++          worker_url = os.environ['WORKER_URL']
++          run_url = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
++
++          chopify = os.environ.get('CHOPIFY_OUTCOME', '')
++          upload = os.environ.get('UPLOAD_OUTCOME', '')
++          success = chopify == 'success' and upload == 'success'
++          clips = json.loads(os.environ.get('CLIPS_JSON') or '[]') if success else []
++
++          payload = {'clips': clips, 'status': 'completed' if success else 'failed', 'github_run_url': run_url}
++          if not success:
++              payload['error_message'] = f'Workflow failed (processing: {chopify or "not run"}, upload: {upload or "not run"}). See {run_url}'
++
++          response = requests.post(
++              f'{worker_url}/api/internal/jobs/{job_id}/complete',
++              headers={'Authorization': f"Bearer {os.environ['WORKER_SECRET']}", 'Content-Type': 'application/json'},
++              json=payload,
++              timeout=30,
++          )
++          print(f'Report completion: {response.status_code} {response.text}')
++          if not response.ok:
++              sys.exit(1)
++          PY
+diff -ruN '--exclude=node_modules' '--exclude=dist' '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=package-lock.json' /tmp/orig/telegram-video-clipper-main/miniapp/package.json telegram-video-clipper-main/miniapp/package.json
+--- a/miniapp/package.json	2026-11-03 15:08:59.000000000 +0000
++++ b/miniapp/package.json	2026-11-03 20:24:31.507508876 +0000
+@@ -7,22 +7,24 @@
+     "build": "tsc && vite build",
+     "preview": "vite preview",
+     "lint": "eslint src --ext .ts,.tsx",
+-    "typecheck": "tsc --noEmit"
++    "typecheck": "tsc --noEmit",
++    "test": "vitest run"
+   },
+   "dependencies": {
++    "@telegram-apps/sdk": "^1.1.0",
+     "react": "^18.2.0",
+-    "react-dom": "^18.2.0",
+-    "@telegram-apps/sdk": "^1.1.0"
++    "react-dom": "^18.2.0"
+   },
+   "devDependencies": {
+     "@types/react": "^18.2.0",
+     "@types/react-dom": "^18.2.0",
++    "@typescript-eslint/eslint-plugin": "^6.13.0",
++    "@typescript-eslint/parser": "^6.13.0",
+     "@vitejs/plugin-react": "^4.2.0",
++    "eslint": "^8.55.0",
++    "terser": "^5.26.0",
+     "typescript": "^5.3.0",
+     "vite": "^5.0.0",
+-    "eslint": "^8.55.0",
+-    "@typescript-eslint/eslint-plugin": "^6.13.0",
+-    "@typescript-eslint/parser": "^6.13.0",
+-    "terser": "^5.26.0"
++    "vitest": "^1.6.1"
+   }
+-}
+\ No newline at end of file
++}
+diff -ruN '--exclude=node_modules' '--exclude=dist' '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=package-lock.json' /tmp/orig/telegram-video-clipper-main/miniapp/src/components/UploadsListScreen.tsx telegram-video-clipper-main/miniapp/src/components/UploadsListScreen.tsx
+--- a/miniapp/src/components/UploadsListScreen.tsx	2026-11-03 20:24:05.934840205 +0000
++++ b/miniapp/src/components/UploadsListScreen.tsx	2026-11-03 20:24:05.934840205 +0000
+@@ -1,4 +1,5 @@
+-import { useState, useEffect, useCallback } from 'react';
++import { useState, useEffect, useCallback, useRef } from 'react';
++import { Job, apiRequest as jobsApiRequest, startProcessing, fetchJob, fetchJobs, latestJobByUpload, isTerminalStatus } from '../lib/jobs';
+ 
+ interface Upload {
+   id: string;
+@@ -10,23 +11,6 @@
+   error_message: string | null;
+ }
+ 
+-interface Job {
+-  id: string;
+-  upload_id: string;
+-  telegram_user_id: number;
+-  status: string;
+-  aspect_ratio: string;
+-  caption_style: string;
+-  enable_tighten: number;
+-  enable_loudnorm: number;
+-  clip_count: number;
+-  error_message: string | null;
+-  created_at: number;
+-  updated_at: number;
+-  completed_at: number | null;
+-  github_run_url?: string;
+-}
+-
+ type Screen = 'upload' | 'uploads' | 'settings' | 'help';
+ 
+ interface Props {
+@@ -39,35 +23,15 @@
+   const [uploads, setUploads] = useState<Upload[]>([]);
+   const [loading, setLoading] = useState(true);
+   const [processingUploadId, setProcessingUploadId] = useState<string | null>(null);
+-  const [jobStatus, setJobStatus] = useState<Record<string, Job>>({});
+-  const [pollingIntervals, setPollingIntervals] = useState<Record<string, ReturnType<typeof setInterval>>>({});
+-
+-  const apiRequest = useCallback(async (endpoint: string, options: RequestInit = {}) => {
+-    const response = await fetch(`${apiBaseUrl}${endpoint}`, {
+-      ...options,
+-      headers: {
+-        'Content-Type': 'application/json',
+-        'Authorization': `Bearer ${initData}`,
+-        ...options.headers,
+-      },
+-    });
+-    
+-    const contentType = response.headers.get('content-type');
+-    let data: any;
+-    
+-    if (contentType && contentType.includes('application/json')) {
+-      data = await response.json();
+-    } else {
+-      const text = await response.text();
+-      console.error('Non-JSON response:', response.status, text);
+-      throw new Error(`Server error (${response.status}): ${text || 'Unknown error'}`);
+-    }
+-    
+-    if (!response.ok) {
+-      throw new Error(data.error || `Request failed with status ${response.status}`);
+-    }
+-    return data.data;
+-  }, [apiBaseUrl, initData]);
++  // Jobs are keyed by UPLOAD id because the list renders per upload.
++  const [jobsByUpload, setJobsByUpload] = useState<Record<string, Job>>({});
++  const [startErrors, setStartErrors] = useState<Record<string, string>>({});
++  const pollTimers = useRef<Record<string, ReturnType<typeof setInterval>>>({});
++
++  const apiRequest = useCallback(
++    (endpoint: string, options: RequestInit = {}) => jobsApiRequest(apiBaseUrl, initData, endpoint, options),
++    [apiBaseUrl, initData]
++  );
+ 
+   const loadUploads = useCallback(async () => {
+     try {
+@@ -81,63 +45,71 @@
+     }
+   }, [apiRequest]);
+ 
+-  const loadJobStatus = useCallback(async (jobId: string) => {
+-    try {
+-      const data = await apiRequest(`/api/internal/jobs/${jobId}`);
+-      setJobStatus(prev => ({ ...prev, [jobId]: data }));
+-      return data;
+-    } catch (e) {
+-      console.error('Failed to load job status:', e);
++  const stopPolling = useCallback((jobId: string) => {
++    const timer = pollTimers.current[jobId];
++    if (timer) {
++      clearInterval(timer);
++      delete pollTimers.current[jobId];
+     }
+-  }, [apiRequest]);
++  }, []);
++
++  const trackJob = useCallback((job: Job) => {
++    setJobsByUpload(prev => ({ ...prev, [job.upload_id]: job }));
++    if (isTerminalStatus(job.status)) stopPolling(job.id);
++  }, [stopPolling]);
+ 
+   const startPollingJob = useCallback((jobId: string) => {
+-    if (pollingIntervals[jobId]) return;
+-    
+-    const interval = setInterval(() => {
+-      loadJobStatus(jobId).then(job => {
+-        if (job && (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled')) {
+-          clearInterval(pollingIntervals[jobId]);
+-          setPollingIntervals(prev => {
+-            const next = { ...prev };
+-            delete next[jobId];
+-            return next;
+-          });
+-        }
+-      });
++    if (pollTimers.current[jobId]) return;
++    pollTimers.current[jobId] = setInterval(async () => {
++      try {
++        trackJob(await fetchJob(apiBaseUrl, initData, jobId));
++      } catch (e) {
++        // Transient errors: keep polling. A 404 means the job is gone, so stop.
++        if (e instanceof Error && e.message === 'Job not found') stopPolling(jobId);
++        console.error('Failed to load job status:', e);
++      }
+     }, 5000);
+-    
+-    setPollingIntervals(prev => ({ ...prev, [jobId]: interval }));
+-  }, [loadJobStatus, pollingIntervals]);
++  }, [apiBaseUrl, initData, trackJob, stopPolling]);
++
++  // Initial load: uploads, plus the caller's existing jobs so status survives a reload.
++  useEffect(() => {
++    loadUploads();
++    fetchJobs(apiBaseUrl, initData)
++      .then(jobs => {
++        const latest = latestJobByUpload(jobs);
++        setJobsByUpload(latest);
++        Object.values(latest).forEach(job => {
++          if (!isTerminalStatus(job.status)) startPollingJob(job.id);
++        });
++      })
++      .catch(e => console.error('Failed to load jobs:', e));
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, []);
++
++  // Stop all polling when the screen unmounts.
++  useEffect(() => {
++    const timers = pollTimers.current;
+     return () => {
+-      Object.values(pollingIntervals).forEach(clearInterval);
++      Object.values(timers).forEach(clearInterval);
+     };
+-  }, [loadUploads, pollingIntervals]);
++  }, []);
+ 
+   const handleProcess = async (uploadId: string) => {
+     setProcessingUploadId(uploadId);
++    setStartErrors(prev => {
++      const next = { ...prev };
++      delete next[uploadId];
++      return next;
++    });
+     try {
+-      const job = await apiRequest('/api/internal/jobs', {
+-        method: 'POST',
+-        body: JSON.stringify({
+-          uploadId,
+-          telegramUserId: parseInt(initData.split('user=')[1]?.split('&')[0] || '0'),
+-          aspectRatio: '9:16',
+-          captionStyle: 'default',
+-          enableTighten: false,
+-          enableLoudnorm: false,
+-        }),
+-      });
+-      
+-      loadJobStatus(job.id);
+-      startPollingJob(job.id);
+-      
+-      alert(`✅ Processing started!\nJob ID: ${job.id}\n\nYou'll receive clips when processing completes.`);
++      const job = await startProcessing(apiBaseUrl, initData, uploadId);
++      trackJob(job);
++      if (!isTerminalStatus(job.status)) startPollingJob(job.id);
+     } catch (e) {
+-      alert(`❌ Failed to start processing: ${e instanceof Error ? e.message : 'Unknown error'}`);
++      setStartErrors(prev => ({
++        ...prev,
++        [uploadId]: e instanceof Error ? e.message : 'Failed to start processing',
++      }));
+     } finally {
+       setProcessingUploadId(null);
+     }
+@@ -224,7 +196,9 @@
+     <div>
+       <h2 className="card-title" style={{ marginBottom: 16 }}>My Uploads</h2>
+       {uploads.map(upload => {
+-        const job = jobStatus[upload.id];
++        const job = jobsByUpload[upload.id];
++        const startError = startErrors[upload.id];
++        const jobActive = !!job && !isTerminalStatus(job.status);
+         const isProcessing = processingUploadId === upload.id;
+         
+         return (
+@@ -254,13 +228,19 @@
+               <button 
+                 className="btn btn-primary" 
+                 onClick={() => handleProcess(upload.id)}
+-                disabled={isProcessing}
++                disabled={isProcessing || jobActive}
+                 style={{ marginTop: 12, width: '100%' }}
+               >
+-                {isProcessing ? '⏳ Starting...' : '▶️ Process Video'}
++                {isProcessing ? '⏳ Starting...' : job?.status === 'failed' ? '🔄 Retry Processing' : '▶️ Process Video'}
+               </button>
+             )}
+             
++            {startError && (
++              <div className="error" style={{ marginTop: 8, fontSize: 12 }}>
++                ❌ {startError}
++              </div>
++            )}
++
+             {job && (
+               <div style={{ marginTop: 12, padding: 12, background: 'var(--bg-secondary)', borderRadius: 'var(--radius-sm)' }}>
+                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+@@ -283,7 +263,7 @@
+                 )}
+                 {job.status === 'completed' && (
+                   <div style={{ fontSize: 12, color: 'var(--success)', marginTop: 8 }}>
+-                    ✅ Processing complete! Clips ready for delivery.
++                    ✅ Processing complete — {job.clip_count} clip{job.clip_count === 1 ? '' : 's'} generated.
+                   </div>
+                 )}
+               </div>
+diff -ruN '--exclude=node_modules' '--exclude=dist' '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=package-lock.json' /tmp/orig/telegram-video-clipper-main/miniapp/src/lib/jobs.test.ts telegram-video-clipper-main/miniapp/src/lib/jobs.test.ts
+--- a/miniapp/src/lib/jobs.test.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/miniapp/src/lib/jobs.test.ts	2026-11-03 20:24:31.512486687 +0000
+@@ -0,0 +1,89 @@
++import { describe, it, expect, vi, beforeEach } from 'vitest';
++import { startProcessing, fetchJob, fetchJobs, latestJobByUpload, isTerminalStatus, Job } from './jobs';
++
++const BASE = 'https://worker.example';
++const INIT = 'query_id=AAA&user=%7B%22id%22%3A42%7D&auth_date=1&hash=abc';
++
++const jsonResponse = (body: unknown, status = 200) => ({
++  ok: status >= 200 && status < 300,
++  status,
++  headers: { get: () => 'application/json' },
++  json: async () => body,
++  text: async () => JSON.stringify(body),
++});
++
++let fetchMock: ReturnType<typeof vi.fn>;
++beforeEach(() => {
++  fetchMock = vi.fn();
++  (globalThis as any).fetch = fetchMock;
++});
++
++describe('Process Video request (regression: Mini App called the private internal route)', () => {
++  it('POSTs to the public /api/jobs route, never /api/internal, with the initData Bearer token', async () => {
++    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true, data: { id: 'job_1', upload_id: 'upload_1', status: 'queued' } }));
++    const job = await startProcessing(BASE, INIT, 'upload_1');
++
++    expect(job.id).toBe('job_1');
++    const [url, init] = fetchMock.mock.calls[0];
++    expect(url).toBe(`${BASE}/api/jobs`);
++    expect(url).not.toContain('/internal');
++    expect(init.method).toBe('POST');
++    expect(init.headers.Authorization).toBe(`Bearer ${INIT}`);
++  });
++
++  it('sends the upload id and options but NO user id (the Worker derives it from initData)', async () => {
++    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true, data: { id: 'j' } }));
++    await startProcessing(BASE, INIT, 'upload_1');
++    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
++    expect(body).toEqual({
++      uploadId: 'upload_1',
++      aspectRatio: '9:16',
++      captionStyle: 'default',
++      enableTighten: false,
++      enableLoudnorm: false,
++    });
++    expect(body).not.toHaveProperty('telegramUserId');
++  });
++
++  it('surfaces the Worker error message (e.g. a GitHub dispatch failure) instead of a generic one', async () => {
++    fetchMock.mockResolvedValueOnce(jsonResponse(
++      { ok: false, error: 'Could not start processing: GitHub dispatch failed: 403 Resource not accessible' }, 502));
++    await expect(startProcessing(BASE, INIT, 'upload_1')).rejects.toThrow('GitHub dispatch failed: 403');
++  });
++
++  it('reports non-JSON server errors with the status code', async () => {
++    fetchMock.mockResolvedValueOnce({
++      ok: false, status: 404, headers: { get: () => 'text/html' }, text: async () => '<html>Not found</html>',
++    });
++    await expect(startProcessing(BASE, INIT, 'upload_1')).rejects.toThrow('Server error (404)');
++  });
++});
++
++describe('job status polling', () => {
++  it('polls GET /api/jobs/:jobId with the job id (not the upload id)', async () => {
++    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true, data: { id: 'job_9', upload_id: 'upload_1', status: 'processing' } }));
++    const job = await fetchJob(BASE, INIT, 'job_9');
++    expect(fetchMock.mock.calls[0][0]).toBe(`${BASE}/api/jobs/job_9`);
++    expect(job.status).toBe('processing');
++  });
++
++  it('loads the caller\'s jobs from GET /api/jobs', async () => {
++    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true, data: { jobs: [{ id: 'a' }] } }));
++    expect(await fetchJobs(BASE, INIT)).toHaveLength(1);
++    expect(fetchMock.mock.calls[0][0]).toContain('/api/jobs');
++  });
++
++  it('maps jobs by UPLOAD id (the list renders per upload) keeping the newest', () => {
++    const mk = (id: string, upload_id: string, created_at: number, status = 'queued') =>
++      ({ id, upload_id, created_at, status } as Job);
++    const map = latestJobByUpload([mk('job_new', 'u1', 200), mk('job_old', 'u1', 100, 'failed'), mk('job_x', 'u2', 50)]);
++    expect(map['u1'].id).toBe('job_new');
++    expect(map['u2'].id).toBe('job_x');
++    expect(map['job_new']).toBeUndefined(); // keyed by upload id, not job id
++  });
++
++  it('knows which statuses stop polling', () => {
++    expect(['completed', 'failed', 'cancelled'].every(isTerminalStatus)).toBe(true);
++    expect(['pending', 'queued', 'processing'].some(isTerminalStatus)).toBe(false);
++  });
++});
+diff -ruN '--exclude=node_modules' '--exclude=dist' '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=package-lock.json' /tmp/orig/telegram-video-clipper-main/miniapp/src/lib/jobs.ts telegram-video-clipper-main/miniapp/src/lib/jobs.ts
+--- a/miniapp/src/lib/jobs.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/miniapp/src/lib/jobs.ts	2026-11-03 20:24:05.912932042 +0000
+@@ -0,0 +1,101 @@
++// Job API client for the Mini App.
++//
++// Every request is authenticated with the Telegram initData as a Bearer token and
++// goes to the PUBLIC /api/jobs routes. The Mini App must never call /api/internal/*
++// (those require the server-side WORKER_SECRET) and never sends a user id: the
++// Worker derives it from the validated initData.
++
++export interface Job {
++  id: string;
++  upload_id: string;
++  telegram_user_id: number;
++  status: string;
++  aspect_ratio: string;
++  caption_style: string;
++  enable_tighten: number;
++  enable_loudnorm: number;
++  clip_count: number;
++  error_message: string | null;
++  created_at: number;
++  updated_at: number;
++  completed_at: number | null;
++  github_run_url?: string | null;
++}
++
++export interface StartOptions {
++  aspectRatio?: string;
++  captionStyle?: string;
++  enableTighten?: boolean;
++  enableLoudnorm?: boolean;
++}
++
++const TERMINAL = ['completed', 'failed', 'cancelled'];
++
++export const isTerminalStatus = (status: string): boolean => TERMINAL.includes(status);
++
++export async function apiRequest<T = any>(
++  apiBaseUrl: string,
++  initData: string,
++  endpoint: string,
++  options: RequestInit = {}
++): Promise<T> {
++  const response = await fetch(`${apiBaseUrl}${endpoint}`, {
++    ...options,
++    headers: {
++      'Content-Type': 'application/json',
++      Authorization: `Bearer ${initData}`,
++      ...(options.headers as Record<string, string> | undefined),
++    },
++  });
++
++  const contentType = response.headers.get('content-type');
++  if (!contentType || !contentType.includes('application/json')) {
++    const text = await response.text();
++    throw new Error(`Server error (${response.status}): ${text || 'Unknown error'}`);
++  }
++
++  const data = await response.json();
++  if (!response.ok || data.ok === false) {
++    throw new Error(data.error || `Request failed with status ${response.status}`);
++  }
++  return data.data as T;
++}
++
++export function startProcessing(
++  apiBaseUrl: string,
++  initData: string,
++  uploadId: string,
++  options: StartOptions = {}
++): Promise<Job> {
++  return apiRequest<Job>(apiBaseUrl, initData, '/api/jobs', {
++    method: 'POST',
++    body: JSON.stringify({
++      uploadId,
++      aspectRatio: options.aspectRatio ?? '9:16',
++      captionStyle: options.captionStyle ?? 'default',
++      enableTighten: options.enableTighten ?? false,
++      enableLoudnorm: options.enableLoudnorm ?? false,
++    }),
++  });
++}
++
++export function fetchJob(apiBaseUrl: string, initData: string, jobId: string): Promise<Job> {
++  return apiRequest<Job>(apiBaseUrl, initData, `/api/jobs/${encodeURIComponent(jobId)}`);
++}
++
++export async function fetchJobs(apiBaseUrl: string, initData: string): Promise<Job[]> {
++  const data = await apiRequest<{ jobs: Job[] }>(apiBaseUrl, initData, '/api/jobs?limit=50');
++  return data.jobs || [];
++}
++
++/** Newest job per upload id. Input is expected newest-first (as the Worker returns it). */
++export function latestJobByUpload(jobs: Job[]): Record<string, Job> {
++  const result: Record<string, Job> = {};
++  for (const job of jobs) {
++    const existing = result[job.upload_id];
++    if (!existing || job.created_at > existing.created_at) {
++      result[job.upload_id] = job;
++    }
++  }
++  return result;
++}
+diff -ruN '--exclude=node_modules' '--exclude=dist' '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=package-lock.json' /tmp/orig/telegram-video-clipper-main/miniapp/vitest.config.ts telegram-video-clipper-main/miniapp/vitest.config.ts
+--- a/miniapp/vitest.config.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/miniapp/vitest.config.ts	1970-01-01 00:00:00.000000000 +0000
+@@ -0,0 +1,8 @@
++import { defineConfig } from 'vitest/config';
++
++export default defineConfig({
++  test: {
++    environment: 'node',
++    include: ['src/**/*.test.ts'],
++  },
++});
+diff -ruN '--exclude=node_modules' '--exclude=dist' '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=package-lock.json' /tmp/orig/telegram-video-clipper-main/requirements-dev.txt telegram-video-clipper-main/requirements-dev.txt
+--- a/requirements-dev.txt	2026-11-03 15:08:59.000000000 +0000
++++ b/requirements-dev.txt	2026-11-03 20:32:32.224962139 +0000
+@@ -1 +1,2 @@
+ pytest>=8.0
++pyyaml>=6.0
+diff -ruN '--exclude=node_modules' '--exclude=dist' '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=__pycache__' '--exclude=package-lock.json' /tmp/orig/telegram-video-clipper-main/tests/test_workflows.py telegram-video-clipper-main/tests/test_workflows.py
+--- a/tests/test_workflows.py	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/test_workflows.py	1970-01-01 00:00:00.000000000 +0000
+@@ -0,0 +1,66 @@
++"""Guards for the GitHub Actions workflows the Worker depends on.
++
++Regression: process-video.yml contained Python at column 0 inside `run: |`
++blocks, so it was not valid YAML. GitHub never registers a workflow file it
++cannot parse, so the Worker's `repository_dispatch` (HTTP 204) started no run.
++"""
++import re
++from pathlib import Path
++
++import pytest
++import yaml
++
++WORKFLOWS = Path(__file__).resolve().parent.parent / ".github" / "workflows"
++
++
++def _load(name):
++    return yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
++
++
++def _triggers(doc):
++    # PyYAML (YAML 1.1) parses the bare key `on` as boolean True.
++    return doc.get("on", doc.get(True))
++
++
++@pytest.mark.parametrize("path", sorted(WORKFLOWS.glob("*.yml")), ids=lambda p: p.name)
++def test_every_workflow_is_valid_yaml(test_path):
++    doc = yaml.safe_load(test_path.read_text(encoding="utf-8"))
++    assert isinstance(doc, dict) and "jobs" in doc
++
++
++def test_process_video_listens_for_worker_dispatch():
++    triggers = _triggers(_load("process-video.yml"))
++    assert triggers["repository_dispatch"]["types"] == ["process-video"]
++
++
++def _steps():
++    return _load("process-video.yml")["jobs"]["process"]["steps"]
++
++
++def test_process_video_never_pipes_stdout_into_github_output():
++    # Log lines that are not `key=value` make the runner fail the step.
++    for step in _steps():
++        assert ">> $GITHUB_OUTPUT" not in step.get("run", ""), step["name"]
++        assert ">> \"$GITHUB_OUTPUT\"" not in step.get("run", ""), step["name"]
++
++
++def test_process_video_python_steps_compile():
++    seen = 0
++    for step in _steps():
++        match = re.search(r"python - <<'PY'\n(.*?)\n\s*PY\s*$", step.get("run", ""), re.S)
++        if match:
++            compile(match.group(1), step["name"], "exec")
++            seen += 1
++    assert seen >= 5
++
++
++def test_process_video_reads_the_fields_the_worker_actually_returns():
++    run = next(s["run"] for s in _steps() if s["name"] == "Get job preferences")
++    assert "caption_style" in run  # the jobs table has caption_style, not `style`
++
++
++def test_completion_status_does_not_depend_on_boolean_string_case():
++    step = next(s for s in _steps() if s["name"] == "Report completion to Worker")
++    env = step["env"]
++    assert "steps.chopify.outcome" in env["CHOPIFY_OUTCOME"]
++    assert "== 'True'" not in step["run"]
+diff -ruN '--exclude=node_modules' '--exclude=dist' '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=package-lock.json' /tmp/orig/telegram-video-clipper-main/worker/src/api.ts telegram-video-clipper-main/worker/src/api.ts
+--- a/worker/src/api.ts	2026-11-03 20:23:42.389917776 +0000
++++ b/worker/src/api.ts	2026-11-03 20:23:42.389917776 +0000
+@@ -1,6 +1,6 @@
+ import { Hono } from 'hono';
+ import { Env, ApiResponse, PresignedUrlResponse, InitiateMultipartResponse, CompleteMultipartRequest, UploadStatusResponse, UserUploadsResponse, TelegramUser, TelegramChat, Job } from './types';
+-import { validateTelegramInitData, createApiResponse, generateId, sanitizeFilename, validateMimeType, validateFileExtension, getExtensionFromMimeType } from './utils';
++import { validateTelegramInitData, createApiResponse, generateId, sanitizeFilename, validateMimeType, validateFileExtension, getExtensionFromMimeType, safeEqual } from './utils';
+ import { Database } from './db';
+ import { R2Uploader } from './r2';
+ 
+@@ -346,7 +346,100 @@
+   return c.json(createApiResponse(true, { status: 'ok', timestamp: Date.now() }));
+ });
+ 
+-// Internal API for GitHub Actions (authenticated via worker secret)
++// ---------------------------------------------------------------------------
++// Job endpoints for the Mini App (authenticated with Telegram initData).
++// The Telegram user id is ALWAYS derived from the validated initData; nothing
++// identity-related is accepted from the request body.
++// ---------------------------------------------------------------------------
++const ALLOWED_ASPECT_RATIOS = ['9:16', '16:9', '1:1'];
++const ALLOWED_CAPTION_STYLES = ['default', 'hormozi', 'mrbeast', 'podcast'];
++const ACTIVE_JOB_STATUSES: Job['status'][] = ['pending', 'queued', 'processing'];
++
++api.post('/jobs', async (c) => {
++  const user = c.get('telegramUser');
++
++  let body: Record<string, unknown>;
++  try {
++    body = await c.req.json();
++  } catch {
++    return c.json(createApiResponse(false, undefined, 'Invalid JSON body', 'BAD_REQUEST'), 400);
++  }
++
++  const uploadId = body.uploadId;
++  if (typeof uploadId !== 'string' || !uploadId) {
++    return c.json(createApiResponse(false, undefined, 'Missing uploadId', 'BAD_REQUEST'), 400);
++  }
++
++  const aspectRatio = body.aspectRatio === undefined ? '9:16' : body.aspectRatio;
++  if (typeof aspectRatio !== 'string' || !ALLOWED_ASPECT_RATIOS.includes(aspectRatio)) {
++    return c.json(createApiResponse(false, undefined, 'Invalid aspectRatio', 'BAD_REQUEST'), 400);
++  }
++
++  const captionStyle = body.captionStyle === undefined ? 'default' : body.captionStyle;
++  if (typeof captionStyle !== 'string' || !ALLOWED_CAPTION_STYLES.includes(captionStyle)) {
++    return c.json(createApiResponse(false, undefined, 'Invalid captionStyle', 'BAD_REQUEST'), 400);
++  }
++
++  const db = new Database(c.env.DB, c.env);
++
++  // Ownership: a user can only process their own uploads. 404 (not 403) so
++  // upload ids of other users are not confirmed to exist.
++  const upload = await db.getUpload(uploadId);
++  if (!upload || upload.telegram_user_id !== user.id) {
++    return c.json(createApiResponse(false, undefined, 'Upload not found', 'UPLOAD_NOT_FOUND'), 404);
++  }
++  if (upload.status !== 'uploaded') {
++    return c.json(createApiResponse(false, undefined, `Upload is not ready for processing (status: ${upload.status})`, 'UPLOAD_NOT_READY'), 409);
++  }
++
++  // Idempotent: a double tap must not dispatch a second workflow.
++  const active = await db.getActiveJobForUpload(uploadId);
++  if (active) {
++    return c.json(createApiResponse(true, active));
++  }
++
++  try {
++    const job = await createProcessingJob(
++      c.env,
++      db,
++      uploadId,
++      user.id,
++      aspectRatio,
++      captionStyle,
++      body.enableTighten === true,
++      body.enableLoudnorm === true
++    );
++    return c.json(createApiResponse(true, job));
++  } catch (error) {
++    if (error instanceof JobError) {
++      return c.json(createApiResponse(false, undefined, error.message, error.code), error.status as 404 | 409);
++    }
++    console.error('Job creation failed:', error);
++    const message = error instanceof Error ? error.message : 'Failed to start processing';
++    return c.json(createApiResponse(false, undefined, `Could not start processing: ${message}`, 'DISPATCH_FAILED'), 502);
++  }
++});
++
++api.get('/jobs', async (c) => {
++  const user = c.get('telegramUser');
++  const limit = Math.min(Math.max(parseInt(c.req.query('limit') || '50', 10) || 50, 1), 100);
++  const db = new Database(c.env.DB, c.env);
++  const jobs = await db.getUserJobs(user.id, limit, 0);
++  return c.json(createApiResponse(true, { jobs }));
++});
++
++api.get('/jobs/:jobId', async (c) => {
++  const user = c.get('telegramUser');
++  const db = new Database(c.env.DB, c.env);
++  const job = await db.getJob(c.req.param('jobId'));
++  if (!job || job.telegram_user_id !== user.id) {
++    return c.json(createApiResponse(false, undefined, 'Job not found', 'JOB_NOT_FOUND'), 404);
++  }
++  return c.json(createApiResponse(true, job));
++});
++
++// Internal API for GitHub Actions (authenticated via worker secret ONLY).
++// The Mini App must never call these routes; it uses /api/jobs instead.
+ const internalApi = new Hono<{ Bindings: Env }>();
+ 
+ internalApi.use('*', async (c, next) => {
+@@ -356,7 +449,7 @@
+   }
+ 
+   const token = authHeader.substring(7);
+-  if (token !== c.env.WORKER_SECRET) {
++  if (!c.env.WORKER_SECRET || !safeEqual(token, c.env.WORKER_SECRET)) {
+     return c.json(createApiResponse(false, undefined, 'Invalid worker secret'), 401);
+   }
+ 
+@@ -367,7 +460,7 @@
+   const jobId = c.req.param('jobId');
+   const db = new Database(c.env.DB, c.env);
+   const job = await db.getJob(jobId);
+-  
++
+   if (!job) {
+     return c.json(createApiResponse(false, undefined, 'Job not found'), 404);
+   }
+@@ -375,38 +468,59 @@
+   return c.json(createApiResponse(true, job));
+ });
+ 
++const REPORTABLE_STATUSES = ['processing', 'completed', 'failed'] as const;
++const TERMINAL_STATUSES = ['completed', 'failed'];
++
+ internalApi.post('/jobs/:jobId/complete', async (c) => {
+   const jobId = c.req.param('jobId');
+   const body = await c.req.json();
+-  
+-  const { clips, status, error_message } = body;
++
++  const { clips, status, error_message, github_run_url } = body;
+   if (!clips || !Array.isArray(clips) || !status) {
+     return c.json(createApiResponse(false, undefined, 'Missing required fields'), 400);
+   }
++  if (!(REPORTABLE_STATUSES as readonly string[]).includes(status)) {
++    return c.json(createApiResponse(false, undefined, `Invalid status: ${status}`), 400);
++  }
+ 
+   const db = new Database(c.env.DB, c.env);
+   const job = await db.getJob(jobId);
+-  
++
+   if (!job) {
+     return c.json(createApiResponse(false, undefined, 'Job not found'), 404);
+   }
+ 
+-  const updates: Partial<Job> = {
+-    status: status as Job['status'],
+-    clip_count: clips.length,
+-    completed_at: Date.now(),
+-  };
+-  
++  const updates: Partial<Job> = { status: status as Job['status'] };
++
++  // Only a terminal report finishes the job and fixes the clip count.
++  if (TERMINAL_STATUSES.includes(status)) {
++    updates.clip_count = clips.length;
++    completed_at: Date.now(),
++  }
++
+   if (error_message) {
+-    updates.error_message = error_message;
++    updates.error_message = String(error_message).slice(0, 1000);
++  }
++
++  if (typeof github_run_url === 'string' && github_run_url.startsWith('https://github.com/')) {
++    updates.github_run_url = github_run_url;
+   }
+ 
+   const updatedJob = await db.updateJob(jobId, updates);
+-  
++
+   return c.json(createApiResponse(true, updatedJob));
+ });
+ 
+-// Shared function for job creation - can be called directly by internal API or bot
++export class JobError extends Error {
++  constructor(message: string, public status: number, public code: string) {
++    super(message);
++    this.name = 'JobError';
++  }
++}
++
++// Shared function for job creation - called by the public Mini App route,
++// the internal route and the bot. Ownership is enforced here so that no
++// caller can create a job for an upload the given Telegram user does not own.
+ export async function createProcessingJob(
+   env: Env,
+   db: Database,
+@@ -418,14 +532,17 @@
+   enableLoudnorm: boolean
+ ): Promise<Job> {
+   const upload = await db.getUpload(uploadId);
+-  
+-  if (!upload) {
+-    throw new Error('Upload not found');
++
++  if (!upload || upload.telegram_user_id !== telegramUserId) {
++    throw new JobError('Upload not found', 404, 'UPLOAD_NOT_FOUND');
++  }
++  if (upload.status !== 'uploaded') {
++    throw new JobError(`Upload is not ready for processing (status: ${upload.status})`, 409, 'UPLOAD_NOT_READY');
+   }
+ 
+   const jobId = `job_${Date.now()}_${telegramUserId}`;
+-  
+-  const job = await db.createJob({
++
++  await db.createJob({
+     id: jobId,
+     upload_id: uploadId,
+     telegram_user_id: telegramUserId,
+@@ -440,10 +557,22 @@
+     github_run_url: null,
+   });
+ 
+-  // Dispatch GitHub Actions workflow - let errors propagate
+-  await dispatchWorkflow(env, jobId, uploadId, telegramUserId);
+-  
+-  // Fetch and return the updated job with queued status and GitHub URL
++  try {
++    await dispatchWorkflow(env, jobId, uploadId, telegramUserId);
++  } catch (error) {
++    // Never leave a job stuck in 'pending'/'queued' when dispatch failed.
++    const message = error instanceof Error ? error.message : 'Dispatch failed';
++    try {
++      const current = await db.getJob(jobId);
++      if (current && ACTIVE_JOB_STATUSES.includes(current.status)) {
++        await db.updateJob(jobId, { status: 'failed', error_message: message.slice(0, 1000) });
++      }
++    } catch (e) {
++      console.error(`Failed to mark job ${jobId} as failed:`, e);
++    }
++    throw error;
++  }
++
+   const updatedJob = await db.getJob(jobId);
+   if (!updatedJob) {
+     throw new Error('Failed to retrieve updated job after dispatch');
+@@ -453,14 +582,14 @@
+ 
+ internalApi.post('/jobs', async (c) => {
+   const body = await c.req.json();
+-  
++
+   const { uploadId, telegramUserId, aspectRatio, captionStyle, enableTighten, enableLoudnorm } = body;
+   if (!uploadId || !telegramUserId) {
+     return c.json(createApiResponse(false, undefined, 'Missing required fields'), 400);
+   }
+ 
+   const db = new Database(c.env.DB, c.env);
+-  
++
+   try {
+     const job = await createProcessingJob(
+       c.env,
+@@ -474,66 +603,81 @@
+     );
+     return c.json(createApiResponse(true, job));
+   } catch (error) {
+-    if (error instanceof Error && error.message === 'Upload not found') {
+-      return c.json(createApiResponse(false, undefined, 'Upload not found'), 404);
++    if (error instanceof JobError) {
++      return c.json(createApiResponse(false, undefined, error.message, error.code), error.status as 404 | 409);
+     }
+     console.error('Job creation failed:', error);
+     return c.json(createApiResponse(false, undefined, error instanceof Error ? error.message : 'Failed to create job'), 500);
+   }
+ });
+ 
++function describeDispatchFailure(status: number, body: string): string {
++  const detail = body.replace(/\s+/g, ' ').trim().slice(0, 300);
++  let hint = '';
++  if (status === 401) hint = ' (GitHub rejected the token: expired, revoked or invalid)';
++  else if (status === 403) hint = ' (token lacks permission to dispatch events, or the request was blocked)';
++  else if (status === 404) hint = ' (repository not found, or the token has no access to it)';
++  else if (status === 422) hint = ' (GitHub rejected the dispatch payload)';
++  return `GitHub dispatch failed: ${status} ${detail}${hint}`;
++}
++
+ async function dispatchWorkflow(env: Env, jobId: string, uploadId: string, telegramUserId: number): Promise<string> {
+   const githubToken = env.GITHUB_TOKEN;
+   const githubRepo = env.GITHUB_REPO || 'Dopeteck/telegram-video-clipper';
+-  
++
+   if (!githubToken) {
+     throw new Error('GITHUB_TOKEN secret not configured in Worker environment');
+   }
+ 
+   const db = new Database(env.DB, env);
+   const upload = await db.getUpload(uploadId);
+-  
+-  const response = await fetch(`https://api.github.com/repos/${githubRepo}/dispatches`, {
+-    method: 'POST',
+-    headers: {
+-      'Authorization': `Bearer ${githubToken}`,
+-      'Accept': 'application/vnd.github.v3+json',
+-      'Content-Type': 'application/json',
+-    },
+-    body: JSON.stringify({
+-      event_type: 'process-video',
+-      client_payload: {
+-        job_id: jobId,
+-        upload_id: uploadId,
+-        telegram_user_id: telegramUserId,
+-        object_key: upload?.object_key || `uploads/${telegramUserId}/${uploadId}/`,
++  if (!upload) {
++    const message = `Upload ${uploadId} not found while dispatching job`;
++    await db.updateJob(jobId, { status: 'failed', error_message: message });
++    throw new Error(message);
++  }
++
++  let response: Response;
++  try {
++    response = await fetch(`https://api.github.com/repos/${githubRepo}/dispatches`, {
++      method: 'POST',
++      headers: {
++        'Authorization': `Bearer ${githubToken}`,
++        'Accept': 'application/vnd.github.v3+json',
++        'Content-Type': 'application/json',
++        // GitHub rejects API requests without a User-Agent.
++        'User-Agent': 'telegram-video-clipper-worker',
++        'X-GitHub-Api-Version': '2022-11-28',
+       },
+-    }),
+-  });
++      body: JSON.stringify({
++        event_type: 'process-video',
++        client_payload: {
++          job_id: jobId,
++          upload_id: uploadId,
++          telegram_user_id: telegramUserId,
++          object_key: upload.object_key,
++        },
++      }),
++    });
++  } catch (error) {
++    const message = `GitHub dispatch request failed: ${error instanceof Error ? error.message : 'network error'}`;
++    await db.updateJob(jobId, { status: 'failed', error_message: message });
++    throw error instanceof Error ? error : new Error(message);
++  }
+ 
+   if (!response.ok) {
+-    const error = await response.text();
+-    // Mark job as failed with dispatch error
+-    await db.updateJob(jobId, { 
+-      status: 'failed', 
+-      error_message: `GitHub dispatch failed: ${response.status} ${error}` 
+-    });
+-    throw new Error(`GitHub dispatch failed: ${response.status} ${error}`);
++    const message = describeDispatchFailure(response.status, await response.text());
++    await db.updateJob(jobId, { status: 'failed', error_message: message });
++    throw new Error(message);
+   }
+ 
+-  // GitHub returns 204 No Content on successful dispatch - no JSON body
+-  // We cannot get the run URL from the dispatch response (it's async)
+-  // Construct the expected actions URL for the repository
++  // GitHub returns 204 No Content: the run id is not available yet. The
++  // workflow reports its real run URL when it starts.
+   const runUrl = `https://github.com/${githubRepo}/actions`;
+-  
+-  // Mark job as queued (dispatched successfully, workflow will start async)
+-  await db.updateJob(jobId, { 
+-    status: 'queued',
+-    github_run_url: `https://github.com/${githubRepo}/actions` 
+-  });
+-  
++  await db.updateJob(jobId, { status: 'queued', github_run_url: runUrl });
++
+   console.log(`Dispatched process-video workflow for job ${jobId}`);
+-  return `https://github.com/${githubRepo}/actions`;
++  return runUrl;
+ }
+ 
+-export { api, internalApi, dispatchWorkflow };
+\ No newline at end of file
++export { api, internalApi, dispatchWorkflow };
+diff -ruN '--exclude=node_modules' '--exclude=dist' '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=package-lock.json' /tmp/orig/telegram-video-clipper-main/worker/src/db.ts telegram-video-clipper-main/worker/src/db.ts
+--- a/worker/src/db.ts	2026-11-03 20:22:29.781205853 +0000
++++ b/worker/src/db.ts	2026-11-03 20:22:29.781205853 +0000
+@@ -221,6 +221,13 @@
+     return result || null;
+   }
+ 
++  async getActiveJobForUpload(uploadId: string): Promise<Job | null> {
++    const result = await this.db.prepare(`
++      SELECT * FROM jobs WHERE upload_id = ? AND status IN ('pending', 'queued', 'processing') ORDER BY created_at DESC LIMIT 1
++    `).bind(uploadId).first<Job>();
++    return result || null;
++  }
++
+   async updateJob(id: string, updates: Partial<Job>): Promise<Job | null> {
+     const fields: string[] = [];
+     const values: unknown[] = [];
+diff -ruN '--exclude=node_modules' '--exclude=dist' '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=package-lock.json' /tmp/orig/telegram-video-clipper-main/worker/src/utils.ts telegram-video-clipper-main/worker/src/utils.ts
+--- a/worker/src/utils.ts	2026-11-03 20:22:29.780974642 +0000
++++ /tmp/orig/telegram-video-clipper-main/worker/src/utils.ts	2026-11-03 20:22:29.780974642 +0000
+@@ -192,4 +192,17 @@
+   const secs = seconds % 60;
+   if (hrs > 0) return `${hrs}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+   return `${mins}:${secs.toString().padStart(2, '0')}`;
+-}
+\ No newline at end of file
++}
++
++// Constant-time string comparison (avoids leaking secret prefixes via timing).
++export function safeEqual(a: string, b: string): boolean {
++  const enc = new TextEncoder();
++  const x = enc.encode(a);
++  const y = enc.encode(b);
++  let diff = x.length ^ y.length;
++  const len = Math.max(x.length, y.length);
++  for (let i = 0; i < len; i++) {
++    diff |= (x[i] ?? 0) ^ (y[i] ?? 0);
++  }
++  return diff === 0;
++}
+diff -ruN '--exclude=node_modules' '--exclude=dist' '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=package-lock.json' /tmp/orig/telegram-video-clipper-main/worker/tests/jobs-flow.test.ts telegram-video-clipper-main/worker/tests/jobs-flow.test.ts
+--- a/worker/tests/jobs-flow.test.ts	1970-01-01 00
++++ /tmp/orig/telegram-video-clipper-main/worker/tests/jobs-flow.test.ts	1970-01-01 00
+@@ -0,0 +1,343 @@
++import { describe, it, expect, vi, beforeEach } from 'vitest';
++
++// In-memory stand-in for the D1-backed Database class, shared by every
++// `new Database(...)` in the Worker (routes and dispatchWorkflow alike).
++const store = vi.hoisted(() => ({
++  uploads: new Map<string, any>(),
++  jobs: new Map<string, any>(),
++}));
++
++vi.mock('../src/db', () => {
++  class Database {
++    constructor(_db?: unknown, _env?: unknown) {}
++    async getUpload(id: string) { return store.uploads.get(id) ?? null; }
++    async getJob(id: string) { return store.jobs.get(id) ?? null; }
++    async createJob(job: any) {
++      const row = { github_run_url: null, created_at: Date.now(), updated_at: Date.now(), ...job };
++      store.jobs.set(row.id, row);
++      return row;
++    }
++    async updateJob(id: string, updates: any) {
++      const row = store.jobs.get(id);
++      if (!row) return null;
++      Object.assign(row, updates);
++      return row;
++    }
++    async getActiveJobForUpload(uploadId: string) {
++      return [...store.jobs.values()].reverse().find(
++        j => j.upload_id === uploadId && ['pending', 'queued', 'processing'].includes(j.status)
++      ) ?? null;
++    }
++    async getUserJobs(userId: number) {
++      return [...store.jobs.values()].filter(j => j.telegram_user_id === userId).reverse();
++    }
++  }
++  return { Database };
++});
++
++import worker from '../src/index';
++
++const BOT_TOKEN = '123456:TEST-BOT-TOKEN';
++const WORKER_SECRET = 'worker-secret-value';
++const ALICE = 1001;
++const BOB = 2002;
++
++async function signInitData(userId: number, opts: { token?: string; ageSeconds?: number } = {}) {
++  const enc = new TextEncoder();
++  const params = new URLSearchParams({
++    auth_date: String(Math.floor(Date.now() / 1000) - (opts.ageSeconds ?? 0)),
++    user: JSON.stringify({ id: userId, first_name: 'test' }),
++    query_id: 'AAHdF6IQAAAAAN0XohDhrOrc',
++  });
++  const dcs = [...params.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k}=${v}`).join('\n');
++  const k1 = await crypto.subtle.importKey('raw', enc.encode('WebAppData'), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
++  const secret = await crypto.subtle.sign('HMAC', k1, enc.encode(opts.token ?? BOT_TOKEN));
++  const k2 = await crypto.subtle.importKey('raw', secret, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
++  const sig = await crypto.subtle.sign('HMAC', k2, enc.encode(dcs));
++  params.set('hash', [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, '0')).join(''));
++  return params.toString();
++}
++
++const baseEnv = (over: Record<string, unknown> = {}): any => ({
++  TELEGRAM_BOT_TOKEN: BOT_TOKEN,
++  WORKER_SECRET,
++  GITHUB_TOKEN: 'ghp_test_token',
++  GITHUB_REPO: 'Dopeteck/telegram-video-clipper',
++  DB: {},
++  ...over,
++});
++
++const call = (path: string, init: RequestInit, env = baseEnv()) =>
++  worker.fetch(new Request(`https://worker.test${path}`, init), env, {} as any);
++
++const asUser = async (userId: number, path: string, method = 'GET', body?: unknown, env = baseEnv()) =>
++  call(path, {
++    method,
++    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await signInitData(userId)}` },
++    body: body === undefined ? undefined : JSON.stringify(body),
++  }, env);
++
++const seedUpload = (id: string, userId: number, status = 'uploaded') =>
++  store.uploads.set(id, {
++    id, telegram_user_id: userId, status,
++    object_key: `uploads/${userId}/${id}/clip.mp4`, original_filename: 'clip.mp4', file_size: 10,
++  });
++
++let fetchMock: ReturnType<typeof vi.fn>;
++
++beforeEach(() => {
++  store.uploads.clear();
++  store.jobs.clear();
++  fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 204, text: async () => '' });
++  (globalThis as any).fetch = fetchMock;
++  vi.spyOn(console, 'log').mockImplementation(() => {});
++  vi.spyOn(console, 'error').mockImplementation(() => {});
++});
++
++describe('REGRESSION: Mini App could never start processing', () => {
++  it('the internal route rejects Telegram initData (this is why the old Mini App call failed)', async () => {
++    seedUpload('upload_1', ALICE);
++    const res = await asUser(ALICE, '/api/internal/jobs', 'POST', { uploadId: 'upload_1', telegramUserId: ALICE });
++    expect(res.status).toBe(401);
++    expect((await res.json() as any).error).toBe('Invalid worker secret');
++    expect(fetchMock).not.toHaveBeenCalled();
++    expect(store.jobs.size).toBe(0);
++  });
++
++  it('the public route accepts Telegram initData and dispatches process-video to GitHub with the right payload', async () => {
++    seedUpload('upload_1', ALICE);
++    const res = await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_1' });
++    expect(res.status).toBe(200);
++    const json = await res.json() as any;
++    expect(json.ok).toBe(true);
++    expect(json.data.status).toBe('queued');
++    expect(json.data.telegram_user_id).toBe(ALICE);
++    expect(json.data.aspect_ratio).toBe('9:16');
++
++    expect(fetchMock).toHaveBeenCalledTimes(1);
++    const [url, init] = fetchMock.mock.calls[0];
++    expect(url).toBe('https://api.github.com/repos/Dopeteck/telegram-video-clipper/dispatches');
++    expect(init.method).toBe('POST');
++    expect(init.headers.Authorization).toBe('Bearer ghp_test_token');
++    expect(init.headers['User-Agent']).toBeTruthy();
++    expect(JSON.parse(init.body)).toEqual({
++      event_type: 'process-video',
++      client_payload: {
++        job_id: json.data.id,
++        upload_id: 'upload_1',
++        telegram_user_id: ALICE,
++        object_key: `uploads/${ALICE}/upload_1/clip.mp4`,
++      },
++    });
++  });
++});
++
++describe('POST /api/jobs authentication and ownership', () => {
++  it('rejects requests with no Authorization header', async () => {
++    const res = await call('/api/jobs', { method: 'POST', body: JSON.stringify({ uploadId: 'x' }) });
++    expect(res.status).toBe(401);
++  });
++
++  it('rejects initData signed with a different bot token', async () => {
++    seedUpload('upload_1', ALICE);
++    const bad = await signInitData(ALICE, { token: '999:WRONG' });
++    const res = await call('/api/jobs', {
++      method: 'POST', headers: { Authorization: `Bearer ${bad}` }, body: JSON.stringify({ uploadId: 'upload_1' }),
++    });
++    expect(res.status).toBe(401);
++    expect(fetchMock).not.toHaveBeenCalled();
++  });
++
++  it('rejects expired initData', async () => {
++    seedUpload('upload_1', ALICE);
++    const old = await signInitData(ALICE, { ageSeconds: 90000 });
++    const res = await call('/api/jobs', {
++      method: 'POST', headers: { Authorization: `Bearer ${old}` }, body: JSON.stringify({ uploadId: 'upload_1' }),
++    });
++    expect(res.status).toBe(401);
++  });
++
++  it("does not let a user process someone else's upload, and does not reveal that it exists", async () => {
++    seedUpload('upload_bob', BOB);
++    const res = await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_bob' });
++    expect(res.status).toBe(404);
++    expect(fetchMock).not.toHaveBeenCalled();
++    expect(store.jobs.size).toBe(0);
++  });
++
++  it('ignores a spoofed telegramUserId in the body and uses the validated identity', async () => {
++    seedUpload('upload_bob', BOB);
++    const res = await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_bob', telegramUserId: BOB });
++    expect(res.status).toBe(404);
++    expect(store.jobs.size).toBe(0);
++  });
++
++  it('returns 404 for an unknown upload', async () => {
++    const res = await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'nope' });
++    expect(res.status).toBe(404);
++  });
++
++  it('returns 409 when the upload has not finished uploading', async () => {
++    seedUpload('upload_1', ALICE, 'uploading');
++    const res = await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_1' });
++    expect(res.status).toBe(409);
++    expect(fetchMock).not.toHaveBeenCalled();
++  });
++
++  it('validates the request body', async () => {
++    seedUpload('upload_1', ALICE);
++    expect((await asUser(ALICE, '/api/jobs', 'POST', {})).status).toBe(400);
++    expect((await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_1', aspectRatio: '4:3' })).status).toBe(400);
++    expect((await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_1', captionStyle: 'evil' })).status).toBe(400);
++  });
++
++  it('is idempotent: a double tap does not dispatch a second workflow', async () => {
++    seedUpload('upload_1', ALICE);
++    const first = await (await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_1' })).json() as any;
++    const second = await (await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_1' })).json() as any;
++    expect(second.data.id).toBe(first.data.id);
++    expect(fetchMock).toHaveBeenCalledTimes(1);
++    expect(store.jobs.size).toBe(1);
++  });
++});
++
++describe('dispatch failures never leave a job stuck', () => {
++  it('GitHub 403: job is persisted as failed with a meaningful message and the API reports it', async () => {
++    seedUpload('upload_1', ALICE);
++    fetchMock.mockResolvedValueOnce({ ok: false, status: 403, text: async () => 'Resource not accessible by personal access token' });
++    const res = await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_1' });
++    expect(res.status).toBe(502);
++    const json = await res.json() as any;
++    expect(json.ok).toBe(false);
++    expect(json.error).toContain('403');
++    expect(json.error).toContain('Resource not accessible');
++
++    const job = [...store.jobs.values()][0];
++    expect(job.status).toBe('failed');
++    expect(job.error_message).toContain('GitHub dispatch failed: 403');
++    expect(JSON.stringify(job)).not.toContain('ghp_test_token');
++  });
++
++  it('GitHub 404 explains likely causes', async () => {
++    seedUpload('upload_1', ALICE);
++    fetchMock.mockResolvedValueOnce({ ok: false, status: 404, text: async () => 'Not Found' });
++    await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_1' });
++    expect([...store.jobs.values()][0].error_message).toContain('repository not found');
++  });
++
++  it('network error: job is marked failed (previously stayed pending forever)', async () => {
++    seedUpload('upload_1', ALICE);
++    fetchMock.mockRejectedValueOnce(new Error('connection reset'));
++    res = await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_1' });
++    expect(res.status).toBe(502);
++    const job = [...store.jobs.values()][0];
++    expect(job.status).toBe('failed');
++    expect(job.error_message).toContain('connection reset');
++  });
++
++  it('missing GITHUB_TOKEN: job is marked failed instead of staying pending', async () => {
++    seedUpload('upload_1', ALICE);
++    const res = await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_1' }, baseEnv({ GITHUB_TOKEN: undefined }));
++    expect(res.status).toBe(502);
++    expect([...store.jobs.values()][0].status).toBe('failed');
++    expect(fetchMock).not.toHaveBeenCalled();
++  });
++
++  it('after a failed dispatch the user can retry (failed jobs are not "active")', async () => {
++    seedUpload('upload_1', ALICE);
++    fetchMock.mockResolvedValueOnce({ ok: false, status: 500, text: async () => 'boom' });
++    await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_1' });
++    const retry = await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_1' });
++    expect(retry.status).toBe(200);
++    expect(store.jobs.size).toBe(2);
++  });
++});
++
++describe('GET /api/jobs and /api/jobs/:id (Mini App status polling)', () => {
++  it('returns the caller\'s job, keyed by job id, including upload_id and status', async () => {
++    seedUpload('upload_1', ALICE);
++    const created = await (await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_1' })).json() as any;
++    const res = await asUser(ALICE, `/api/jobs/${created.data.id}`);
++    expect(res.status).toBe(200);
++    const json = await res.json() as any;
++    expect(json.data.id).toBe(created.data.id);
++    expect(json.data.upload_id).toBe('upload_1');
++    expect(json.data.status).toBe('queued');
++  });
++
++  it("does not expose another user's job", async () => {
++    seedUpload('upload_bob', BOB);
++    const created = await (await asUser(BOB, '/api/jobs', 'POST', { uploadId: 'upload_bob' })).json() as any;
++    expect((await asUser(ALICE, `/api/jobs/${created.data.id}`)).status).toBe(404);
++    const list = await (await asUser(ALICE, '/api/jobs')).json() as any;
++    expect(list.data.jobs).toEqual([]);
++  });
++
++  it('lists the caller\'s jobs so the UI can resume polling after a reload', async () => {
++    seedUpload('upload_1', ALICE);
++    await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_1' });
++    const list = await (await asUser(ALICE, '/api/jobs')).json() as any;
++    expect(list.data.jobs).toHaveLength(1);
++    expect(list.data.jobs[0].upload_id).toBe('upload_1');
++  });
++});
++
++describe('internal routes stay protected and keep working for the workflow', () => {
++  const internal = (path: string, method = 'GET', body?: unknown, token: string | null = WORKER_SECRET, env = baseEnv()) =>
++    call(path, {
++      method,
++      headers: { 'Content-Type': 'application/json', ...(token === null ? {} : { Authorization: `Bearer ${token}` }) },
++      body: body === undefined ? undefined : JSON.stringify(body),
++    }, env);
++
++  it('rejects missing, wrong and empty secrets', async () => {
++    expect((await internal('/api/internal/jobs/x', 'GET', undefined, null)).status).toBe(401);
++    expect((await internal('/api/internal/jobs/x', 'GET', undefined, 'wrong')).status).toBe(401);
++    expect((await internal('/api/internal/jobs/x', 'GET', undefined, '', baseEnv({ WORKER_SECRET: '' }))).status).toBe(401);
++  });
++
++  it('lets the workflow read a job with the worker secret', async () => {
++    seedUpload('upload_1', ALICE);
++    const created = await (await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_1' })).json() as any;
++    const res = await internal(`/api/internal/jobs/${created.data.id}`);
++    expect(res.status).toBe(200);
++    expect((await res.json() as any).data.caption_style).toBe('default');
++  });
++
++  it('internal job creation now enforces upload ownership too', async () => {
++    seedUpload('upload_bob', BOB);
++    const res = await internal('/api/internal/jobs', 'POST', { uploadId: 'upload_bob', telegramUserId: ALICE });
++    expect(res.status).toBe(404);
++    expect(fetchMock).not.toHaveBeenCalled();
++  });
++
++  it("'processing' report does not set completed_at or clip_count; 'completed' does", async () => {
++    seedUpload('upload_1', ALICE);
++    const created = await (await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_1' })).json() as any;
++    const id = created.data.id;
++
++    const started = await internal(`/api/internal/jobs/${id}/complete`, 'POST', {
++      clips: [], status: 'processing', github_run_url: 'https://github.com/Dopeteck/telegram-video-clipper/actions/runs/1',
++    });
++    expect(started.status).toBe(200);
++    let job = store.jobs.get(id);
++    expect(job.status).toBe('processing');
++    expect(job.completed_at ?? null).toBeNull();
++    expect(job.github_run_url).toBe('https://github.com/Dopeteck/telegram-video-clipper/actions/runs/1');
++
++    await internal(`/api/internal/jobs/${id}/complete`, 'POST', { clips: ['jobs/a/1.mp4', 'jobs/a/2.mp4'], status: 'completed' });
++    job = store.jobs.get(id);
++    expect(job.status).toBe('completed');
++    expect(job.clip_count).toBe(2);
++    expect(job.completed_at).toBeTypeOf('number');
++  });
++
++  it('rejects unknown statuses and non-GitHub run URLs are ignored', async () => {
++    seedUpload('upload_1', ALICE);
++    const created = await (await asUser(ALICE, '/api/jobs', 'POST', { uploadId: 'upload_1' })).json() as any;
++    const id = created.data.id;
++    expect((await internal(`/api/internal/jobs/${id}/complete`, 'POST', { clips: [], status: 'pending' })).status).toBe(400);
++    await internal(`/api/internal/jobs/${id}/complete`, 'POST', { clips: [], status: 'processing', github_run_url: 'https://evil.example/x' });
++    expect(store.jobs.get(id).github_run_url).toBe('https://github.com/Dopeteck/telegram-video-clipper/actions');
++  });
++});

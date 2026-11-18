@@ -289,7 +289,13 @@ $("#create-form").addEventListener(
       .value.split(/\r?\n/)
       .map((s) => s.trim().replace(/^"|"$/g, ""))
       .filter(Boolean);
-    if (!sources.length) throw new Error("Add a video path or URL.");
+    const yt = $("#yt-url").value.trim();
+    if (yt) {
+      if (!/^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//.test(yt))
+        throw new Error("Remote URL must be a YouTube link.");
+      sources.push(yt);
+    }
+    if (!sources.length) throw new Error("Add a video path or YouTube URL.");
     const button = event.target.querySelector("button[type=submit]");
     button.disabled = true;
     try {
@@ -297,6 +303,7 @@ $("#create-form").addEventListener(
         aspect: $("#new-aspect").value,
         whisper_model: $("#new-model").value,
         style: $("#new-style").value,
+        blur_fill: $("#create-form").elements.blur_fill.checked,
       };
       const result = await api("/api/batch", { sources, options });
       await selectProject(result.projects[0].id);
@@ -304,6 +311,7 @@ $("#create-form").addEventListener(
         `${sources.length} project${sources.length === 1 ? "" : "s"} queued for review.`,
       );
       $("#sources").value = "";
+      $("#yt-url").value = "";
     } finally {
       button.disabled = false;
     }
@@ -321,6 +329,7 @@ $("#settings-form").addEventListener(
       values.min_score === "" ? null : Number(values.min_score);
     values.tighten = form.elements.tighten.checked;
     values.loudnorm = form.elements.loudnorm.checked;
+    values.blur_fill = form.elements.blur_fill.checked;
     values.centers = [Number(values.center1), Number(values.center2)];
     delete values.center1;
     delete values.center2;

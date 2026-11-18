@@ -131,6 +131,9 @@ def main():
     ap.add_argument("--centers", type=float, nargs=2, default=[0.25, 0.75],
                     help="horizontal speaker centers from 0 to 1 for split-screen")
     ap.add_argument("--device", choices=["cpu", "cuda", "auto"], default="cpu")
+    ap.add_argument("--blur-fill", action="store_true",
+                    help="vertical 9:16 blur-fill framing: keeps the full "
+                         "horizontal frame instead of cropping to the speaker")
     args = ap.parse_args()
     if not (args.url or args.batch or args.project):
         ap.error("provide a local video, URL, --batch file, or --project directory")

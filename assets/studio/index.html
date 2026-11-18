@@ -56,12 +56,18 @@
           <textarea
             id="sources"
             rows="4"
-            required
             placeholder="C:\Videos\podcast.mp4&#10;https://youtube.com/watch?v=..."
           ></textarea>
+          <label for="yt-url">Remote YouTube URL</label>
+          <input
+            id="yt-url"
+            type="url"
+            placeholder="https://www.youtube.com/watch?v=6uSskUaDL90"
+          />
           <p class="hint">
             One source per line. Local files stay in place. URLs download to
-            their project folder.
+            their project folder. YouTube subtitles are fetched instead of the
+            full video when available; only your selected moments are extracted.
           </p>
           <div class="form-grid">
             <label
@@ -87,6 +93,10 @@
                 <option>mrbeast</option>
                 <option>podcast</option>
               </select></label
+            >
+            <label class="check"
+              ><input name="blur_fill" type="checkbox" /> Blur-fill vertical
+              framing · keeps the full horizontal frame</label
             >
           </div>
           <div class="form-bottom">
@@ -202,6 +212,10 @@
                 Split-screen uses 9:16. Set each speaker's horizontal position
                 for fixed-camera footage.
               </p>
+              <label class="check"
+                ><input name="blur_fill" type="checkbox" /> Blur-fill vertical
+                framing · keeps the full horizontal frame instead of cropping
+              </label>
               <div class="pair">
                 <label
                   >Top center (0–1)<input
