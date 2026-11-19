@@ -253,6 +253,14 @@ def run_project(path, action="all", preview=False, pick=None, resume=True, progr
             for i, segment in enumerate(segments, 1):
                 stage(f"{'preview' if preview else 'render'} {i}/{len(segments)}")
                 if yt_url:
+                    # Calculate cache key first so completed sections are
+                    # skipped without any YouTube download or transcription.
+                    key = digest([segment, yt_url, options, brand, logo_identity, preview])
+                    cached = state["renders"].get(key)
+                    expected_suffixes = [".mp4", ".srt"] if preview else [".mp4", ".srt", ".png", ".meta.json"]
+                    if resume and cached and all(Path(cached).with_suffix(ext).is_file() for ext in expected_suffixes):
+                        outputs.append(cached)
+                        continue
                     # Remote section extraction: download only the approved range
                     # directly from YouTube, never the full source. Max 1080p.
                     section = dt.download_section(yt_url, float(segment["start"]), float(segment["end"]),
@@ -264,12 +272,6 @@ def run_project(path, action="all", preview=False, pick=None, resume=True, progr
                         render_seg = {**segment, "id": segment["id"] + "-section",
                                       "start": 0.0, "end": dur}
                         W, H = render_clips.ffprobe_dims(section)
-                        key = digest([segment, yt_url, options, brand, logo_identity, preview])
-                        cached = state["renders"].get(key)
-                        expected_suffixes = [".mp4", ".srt"] if preview else [".mp4", ".srt", ".png", ".meta.json"]
-                        if resume and cached and all(Path(cached).with_suffix(ext).is_file() for ext in expected_suffixes):
-                            outputs.append(cached)
-                            continue
                         output = render_clips.render(render_seg, section_words, section, W, H, path,
                             options["aspect"], out_dir=out, style=options["style"],
                             do_tighten=options["tighten"], loudnorm=options["loudnorm"],

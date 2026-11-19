@@ -351,11 +351,103 @@ class TestYouTubeRenderArchitecture:
         leftover = list(sections_dir.iterdir())
         assert not leftover, f"Leftover section files after failed extraction: {[p.name for p in leftover]}"
 
+    def test_youtube_render_skips_cached_section(
+        self, tmp_path, monkeypatch, yt_info
+    ):
+        """Cached YouTube section must not trigger download_section or transcribe_words."""
+        # Build a prepared YouTube project without going through prepare/scoring
+        monkeypatch.setattr(
+            dt.yt_dlp, "YoutubeDL", lambda opts: FakeYoutubeDL(yt_info)
+        )
+
+        options = projects.validate_options(
+            {"aspect": "9:16", "blur_fill": True, "min_len": 5, "max_len": 40, "min_score": 0}
+        )
+        state = projects.create_project(
+            tmp_path, "https://www.youtube.com/watch?v=6uSskUaDL90", options
+        )
+        path = projects.project_path(tmp_path, state["id"])
+
+        # Manually set YouTube-specific state (as prepare would)
+        state["yt_url"] = "https://www.youtube.com/watch?v=6uSskUaDL90"
+        state["yt_meta"] = yt_info
+        state["sub_path"] = str(path / "subs.en.srt")
+        state["video"] = None
+
+        # Write transcript.json
+        tr = {
+            "video": None,
+            "language": "en",
+            "duration": 2914.0,
+            "model": "youtube-subtitles",
+            "segments": [{"start": 0.0, "end": 40.0, "text": "hello world. social media addiction is real."}],
+            "words": [
+                {"word": "hello", "start": 0.0, "end": 1.0},
+                {"word": "world.", "start": 1.1, "end": 2.0},
+            ],
+        }
+        (path / "transcript.json").write_text(
+            json.dumps(tr, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+        # Write segments.json
+        projects.atomic_json(path / "segments.json", [
+            {"start": 10.0, "end": 35.0, "hook": "test moment", "overall": 9.0}
+        ])
+
+        # Pre-create a valid completed render output with all expected suffixes
+        out_dir = path / "clips"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        fake_output = out_dir / "001-test.mp4"
+        fake_output.write_bytes(b"fake-clip")
+        for ext in (".mp4", ".srt", ".png", ".meta.json"):
+            (fake_output.with_suffix(ext)).write_bytes(b"x")
+
+        # Manually seed the renders cache with the expected key
+        segment = {"start": 10.0, "end": 35.0, "hook": "test moment", "overall": 9.0, "id": "001"}
+        key = projects.digest([segment, state["yt_url"], state["options"], None, None, False])
+        state["renders"][key] = str(fake_output)
+        projects.save_project(path, state)
+
+        # Track whether download_section / transcribe_words are called
+        download_called = {"count": 0}
+        transcribe_called = {"count": 0}
+
+        def fake_download_section(url, start, end, workdir, source=None, retries=3):
+            download_called["count"] += 1
+            section_file = workdir / f"section-test.mp4"
+            workdir.mkdir(parents=True, exist_ok=True)
+            section_file.write_bytes(b"fake-video")
+            return section_file.resolve()
+
+        monkeypatch.setattr(dt, "download_section", fake_download_section)
+
+        def fake_transcribe_words(*args, **kwargs):
+            transcribe_called["count"] += 1
+            return [], {}
+
+        monkeypatch.setattr(dt, "transcribe_words", fake_transcribe_words)
+        monkeypatch.setattr(
+            projects.render_clips, "ffprobe_dims", lambda p: (1080, 1920)
+        )
+
+        result = projects.run_project(path, action="render")
+
+        # The cached section must NOT trigger download or transcription
+        assert download_called["count"] == 0, \
+            f"download_section must NOT be called for cached section, called {download_called['count']} time(s)"
+        assert transcribe_called["count"] == 0, \
+            f"transcribe_words must NOT be called for cached section, called {transcribe_called['count']} time(s)"
+        # The existing output must be preserved and reported as completed
+        assert result["status"] == "complete"
+        assert len(result.get("last_outputs", [])) == 1
+        assert result["last_outputs"][0] == str(fake_output)
+        assert fake_output.exists()
+
     def test_local_file_render_unchanged(
         self, tmp_path, monkeypatch
     ):
-        """Local-file rendering must still download the full source and use it directly."""
-        # Create a fake local source file
+        """Local-file rendering must still download the full source and use it directly."""        # Create a fake local source file
         source = tmp_path / "source.mp4"
         source.write_bytes(b"fake-video")
 

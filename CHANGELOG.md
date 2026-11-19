@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Remote YouTube URL input in Studio alongside local file paths; only English subtitles are downloaded for transcript scoring, never the full source file.
-- Subtitle-only ingestion for YouTube sources: metadata and English captions are fetched without downloading the video; selected timestamp ranges are extracted with yt-dlp section downloading, falling back to a local ffmpeg section cut of a capped-resolution download.
+- Subtitle-only ingestion for YouTube sources: metadata and English captions are fetched without downloading the video; selected timestamp ranges are extracted directly from YouTube with yt-dlp section downloading at a 1080p maximum; the complete source file is never downloaded.
 - Per-section retries with automatic cleanup of partial section files; failed sections are retried individually without restarting the job.
 - Vertical 9:16 blur-fill framing (`--blur-fill` / Studio checkbox): keeps the entire horizontal frame scaled to fit the canvas with a blurred copy filling top/bottom instead of cropping the speaker out.
 - Default clip window is now 25–40 seconds; 1080 × 1920 vertical exports with word-level captions and original speaker audio.
