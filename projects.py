@@ -258,7 +258,7 @@ def run_project(path, action="all", preview=False, pick=None, resume=True, progr
                     key = digest([segment, yt_url, options, brand, logo_identity, preview])
                     cached = state["renders"].get(key)
                     expected_suffixes = [".mp4", ".srt"] if preview else [".mp4", ".srt", ".png", ".meta.json"]
-                    if resume and cached and all(Path(cached).with_suffix(ext).is_file() for ext in expected_suffixes):
+                    if resume and cached and render_clips.validate_output(cached, expected_suffixes):
                         outputs.append(cached)
                         continue
                     # Remote section extraction: download only the approved range
@@ -288,7 +288,7 @@ def run_project(path, action="all", preview=False, pick=None, resume=True, progr
                     key = digest([segment, data["words"], file_identity(source), options, brand, logo_identity, preview])
                     cached = state["renders"].get(key)
                     expected_suffixes = [".mp4", ".srt"] if preview else [".mp4", ".srt", ".png", ".meta.json"]
-                    if resume and cached and all(Path(cached).with_suffix(ext).is_file() for ext in expected_suffixes):
+                    if resume and cached and render_clips.validate_output(cached, expected_suffixes):
                         outputs.append(cached)
                         continue
                     output = render_clips.render({**segment, "id": segment["id"] + "-" + key[:8]}, data["words"], source, W, H, path,

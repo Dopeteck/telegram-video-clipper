@@ -3,6 +3,7 @@
 Mocks the network/download layers; no actual YouTube calls or ffmpeg renders.
 """
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -400,8 +401,12 @@ class TestYouTubeRenderArchitecture:
         out_dir.mkdir(parents=True, exist_ok=True)
         fake_output = out_dir / "001-test.mp4"
         fake_output.write_bytes(b"fake-clip")
-        for ext in (".mp4", ".srt", ".png", ".meta.json"):
+        for ext in (".mp4", ".srt", ".png"):
             (fake_output.with_suffix(ext)).write_bytes(b"x")
+        # Valid metadata JSON
+        (fake_output.with_suffix(".meta.json")).write_text(
+            json.dumps({"title": "test clip", "description": "desc"}), encoding="utf-8"
+        )
 
         # Manually seed the renders cache with the expected key
         segment = {"start": 10.0, "end": 35.0, "hook": "test moment", "overall": 9.0, "id": "001"}
@@ -444,10 +449,172 @@ class TestYouTubeRenderArchitecture:
         assert result["last_outputs"][0] == str(fake_output)
         assert fake_output.exists()
 
+    def _make_cached_section_setup(self, tmp_path, monkeypatch, yt_info):
+        """Build a prepared YouTube project with a cached render and tracking mocks."""
+        monkeypatch.setattr(
+            dt.yt_dlp, "YoutubeDL", lambda opts: FakeYoutubeDL(yt_info)
+        )
+        options = projects.validate_options(
+            {"aspect": "9:16", "blur_fill": True, "min_len": 5, "max_len": 40, "min_score": 0}
+        )
+        state = projects.create_project(
+            tmp_path, "https://www.youtube.com/watch?v=6uSskUaDL90", options
+        )
+        path = projects.project_path(tmp_path, state["id"])
+        state["yt_url"] = "https://www.youtube.com/watch?v=6uSskUaDL90"
+        state["yt_meta"] = yt_info
+        state["sub_path"] = str(path / "subs.en.srt")
+        state["video"] = None
+
+        tr = {
+            "video": None,
+            "language": "en",
+            "duration": 2914.0,
+            "model": "youtube-subtitles",
+            "segments": [{"start": 0.0, "end": 40.0, "text": "hello world. social media addiction is real."}],
+            "words": [
+                {"word": "hello", "start": 0.0, "end": 1.0},
+                {"word": "world.", "start": 1.1, "end": 2.0},
+            ],
+        }
+        (path / "transcript.json").write_text(
+            json.dumps(tr, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        projects.atomic_json(path / "segments.json", [
+            {"start": 10.0, "end": 35.0, "hook": "test moment", "overall": 9.0}
+        ])
+
+        out_dir = path / "clips"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        fake_output = out_dir / "001-test.mp4"
+        fake_output.parent.mkdir(parents=True, exist_ok=True)
+        fake_output.write_bytes(b"fake-clip")
+        for ext in (".mp4", ".srt", ".png"):
+            (fake_output.with_suffix(ext)).write_bytes(b"x")
+        (fake_output.with_suffix(".meta.json")).write_text(
+            json.dumps({"title": "test clip", "description": "desc"}), encoding="utf-8"
+        )
+
+        segment = {"start": 10.0, "end": 35.0, "hook": "test moment", "overall": 9.0, "id": "001"}
+        key = projects.digest([segment, state["yt_url"], state["options"], None, None, False])
+        state["renders"][key] = str(fake_output)
+        projects.save_project(path, state)
+
+        download_called = {"count": 0}
+        transcribe_called = {"count": 0}
+
+        def fake_download_section(url, start, end, workdir, source=None, retries=3):
+            download_called["count"] += 1
+            section_file = workdir / f"section-test.mp4"
+            workdir.mkdir(parents=True, exist_ok=True)
+            section_file.write_bytes(b"fake-video")
+            return section_file.resolve()
+
+        monkeypatch.setattr(dt, "download_section", fake_download_section)
+
+        def fake_transcribe_words(*args, **kwargs):
+            transcribe_called["count"] += 1
+            return [], {}
+
+        monkeypatch.setattr(dt, "transcribe_words", fake_transcribe_words)
+        monkeypatch.setattr(
+            projects.render_clips, "ffprobe_dims", lambda p: (1080, 1920)
+        )
+
+        fake_render_output = path / "clips" / "001-rerendered.mp4"
+        fake_render_output.parent.mkdir(parents=True, exist_ok=True)
+        fake_render_output.write_bytes(b"rerendered-clip")
+
+        def fake_render(seg, words, source, W, H, workdir, aspect, out_dir=None,
+                        style=None, do_tighten=False, loudnorm=False, preview=False,
+                        brand=None, layout="single", centers=(0.25, 0.75), blur_fill=False):
+            return fake_render_output
+
+        monkeypatch.setattr(projects.render_clips, "render", fake_render)
+
+        return path, state, fake_output, fake_render_output, download_called, transcribe_called
+
+    def test_youtube_render_rejects_zero_byte_mp4(
+        self, tmp_path, monkeypatch, yt_info
+    ):
+        """Zero-byte MP4 must be rejected and the section rerendered."""
+        path, state, cached_output, rerender_output, download_called, transcribe_called = \
+            self._make_cached_section_setup(tmp_path, monkeypatch, yt_info)
+        # Corrupt: zero-byte MP4
+        cached_output.write_bytes(b"")
+
+        result = projects.run_project(path, action="render")
+
+        assert download_called["count"] >= 1, \
+            f"download_section MUST be called for invalid cache, called {download_called['count']} time(s)"
+        assert transcribe_called["count"] >= 1, \
+            f"transcribe_words MUST be called for invalid cache, called {transcribe_called['count']} time(s)"
+        assert result["status"] == "complete"
+        assert len(result.get("last_outputs", [])) == 1
+
+    def test_youtube_render_rejects_missing_output(
+        self, tmp_path, monkeypatch, yt_info
+    ):
+        """Missing expected output file must be rejected and the section rerendered."""
+        path, state, cached_output, rerender_output, download_called, transcribe_called = \
+            self._make_cached_section_setup(tmp_path, monkeypatch, yt_info)
+        # Corrupt: delete the .srt file
+        (cached_output.with_suffix(".srt")).unlink()
+
+        result = projects.run_project(path, action="render")
+
+        assert download_called["count"] >= 1, \
+            f"download_section MUST be called for invalid cache, called {download_called['count']} time(s)"
+        assert transcribe_called["count"] >= 1, \
+            f"transcribe_words MUST be called for invalid cache, called {transcribe_called['count']} time(s)"
+        assert result["status"] == "complete"
+
+    def test_youtube_render_rejects_invalid_mp4(
+        self, tmp_path, monkeypatch, yt_info
+    ):
+        """MP4 that fails ffprobe validation must be rejected and the section rerendered."""
+        path, state, cached_output, rerender_output, download_called, transcribe_called = \
+            self._make_cached_section_setup(tmp_path, monkeypatch, yt_info)
+
+        def failing_ffprobe_dims(p):
+            if str(p).endswith("001-test.mp4"):
+                raise subprocess.CalledProcessError(1, ["ffprobe", str(p)])
+            return (1080, 1920)
+
+        monkeypatch.setattr(
+            projects.render_clips, "ffprobe_dims", failing_ffprobe_dims
+        )
+
+        result = projects.run_project(path, action="render")
+
+        assert download_called["count"] >= 1, \
+            f"download_section MUST be called for invalid cache, called {download_called['count']} time(s)"
+        assert transcribe_called["count"] >= 1, \
+            f"transcribe_words MUST be called for invalid cache, called {transcribe_called['count']} time(s)"
+        assert result["status"] == "complete"
+
+    def test_youtube_render_rejects_invalid_metadata_json(
+        self, tmp_path, monkeypatch, yt_info
+    ):
+        """Invalid metadata JSON must be rejected and the section rerendered."""
+        path, state, cached_output, rerender_output, download_called, transcribe_called = \
+            self._make_cached_section_setup(tmp_path, monkeypatch, yt_info)
+        # Corrupt: invalid JSON in .meta.json
+        (cached_output.with_suffix(".meta.json")).write_text("{not valid json", encoding="utf-8")
+
+        result = projects.run_project(path, action="render")
+
+        assert download_called["count"] >= 1, \
+            f"download_section MUST be called for invalid cache, called {download_called['count']} time(s)"
+        assert transcribe_called["count"] >= 1, \
+            f"transcribe_words MUST be called for invalid cache, called {transcribe_called['count']} time(s)"
+        assert result["status"] == "complete"
+
     def test_local_file_render_unchanged(
         self, tmp_path, monkeypatch
     ):
-        """Local-file rendering must still download the full source and use it directly."""        # Create a fake local source file
+        """Local-file rendering must still download the full source and use it directly."""
+        # Create a fake local source file
         source = tmp_path / "source.mp4"
         source.write_bytes(b"fake-video")
 

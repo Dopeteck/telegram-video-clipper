@@ -22,8 +22,12 @@ def ready_project(tmp_path):
 
 def fake_render(segment, *args, **kwargs):
     out = kwargs["out_dir"] / f"{segment['id']}.mp4"
-    for ext in (".mp4", ".srt", ".png", ".meta.json"):
-        out.with_suffix(ext).write_text("rendered")
+    out.with_suffix(".mp4").write_text("rendered")
+    out.with_suffix(".srt").write_text("rendered")
+    out.with_suffix(".png").write_text("rendered")
+    out.with_suffix(".meta.json").write_text(
+        json.dumps({"title": "test clip", "description": "desc"})
+    )
     return out
 
 

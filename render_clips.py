@@ -92,6 +92,29 @@ def ffprobe_dims(path):
     return int(w), int(h)
 
 
+def validate_output(output_path, expected_suffixes):
+    """Return True only if every expected output file exists, is non-empty,
+    the MP4 passes ffprobe validation, and any metadata JSON parses.
+    Used to decide whether a cached render can be safely skipped."""
+    base = Path(output_path)
+    for ext in expected_suffixes:
+        p = base.with_suffix(ext)
+        if not p.is_file() or p.stat().st_size == 0:
+            return False
+    mp4 = base.with_suffix(".mp4")
+    try:
+        ffprobe_dims(mp4)
+    except Exception:
+        return False
+    meta = base.with_suffix(".meta.json")
+    if meta.is_file():
+        try:
+            json.loads(meta.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+    return True
+
+
 def crop_for(W, H, tw, th):
     """Largest centred crop of the WxH source matching the target aspect."""
     tar = tw / float(th)
