@@ -181,7 +181,6 @@ jobs:
           import subprocess
           import sys
           import json
-          import re
 
           video_path = os.environ['VIDEO_PATH']
           aspect_ratio = os.environ['ASPECT_RATIO']
@@ -216,11 +215,10 @@ jobs:
               display_cmd[2] = '[YouTube URL redacted]'
           print('Running: ' + ' '.join(display_cmd))
           result = subprocess.run(cmd, capture_output=True, text=True, cwd='.')
-          def redact_youtube_urls(text):
-              return re.sub(r'https?://(?:www\\.)?(?:youtube\\.com|youtu\\.be)/[^\\s]+', '[YouTube URL redacted]', text)
-
-          print(f'stdout: {redact_youtube_urls(result.stdout)}')
-          print(f'stderr: {redact_youtube_urls(result.stderr)}')
+          safe_stdout = result.stdout.replace(video_path, '[YouTube URL redacted]') if video_path.startswith('https://www.youtube.com/') else result.stdout
+          safe_stderr = result.stderr.replace(video_path, '[YouTube URL redacted]') if video_path.startswith('https://www.youtube.com/') else result.stderr
+          print(f'stdout: {safe_stdout}')
+          print(f'stderr: {safe_stderr}')
           print(f'returncode: {result.returncode}')
 
           if result.returncode != 0:
