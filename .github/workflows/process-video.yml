@@ -41,10 +41,11 @@ jobs:
           JOB_ID: ${{ github.event.client_payload.job_id }}
           UPLOAD_ID: ${{ github.event.client_payload.upload_id }}
           OBJECT_KEY: ${{ github.event.client_payload.object_key }}
+          SOURCE_URL: ${{ github.event.client_payload.source_url }}
         run: |
           echo "event=${{ github.event_name }} job_id=${JOB_ID} upload_id=${UPLOAD_ID}"
-          if [ -z "$JOB_ID" ] || [ -z "$UPLOAD_ID" ] || [ -z "$OBJECT_KEY" ]; then
-            echo "::error::Missing job_id/upload_id/object_key in client_payload. This workflow must be triggered by the Worker's repository_dispatch (event_type process-video)."
+          if [ -z "$JOB_ID" ] || [ -z "$UPLOAD_ID" ] || { [ -z "$OBJECT_KEY" ] && [ -z "$SOURCE_URL" ]; }; then
+            echo "::error::Missing job_id/upload_id and source reference in client_payload."
             exit 1
           fi
 
@@ -91,10 +92,20 @@ jobs:
         id: download
         env:
           JOB_ID: ${{ github.event.client_payload.job_id }}
+          SOURCE_URL: ${{ github.event.client_payload.source_url }}
         run: |
           python - <<'PY'
           import os
           import requests
+
+          source_url = os.environ.get('SOURCE_URL', '').strip()
+          if source_url:
+              # Chopify's yt-dlp ingestion handles YouTube URLs directly. Do not
+              # log the URL; it may be an unlisted link.
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+                  out.write(f'video_path={source_url}\\n')
+              print('Using YouTube URL as source (URL redacted).')
+              raise SystemExit(0)
 
           job_id = os.environ['JOB_ID']
           worker_url = os.environ['WORKER_URL']
@@ -199,7 +210,10 @@ jobs:
           if enable_loudnorm:
               cmd.append('--loudnorm')
 
-          print('Running: ' + ' '.join(cmd))
+          display_cmd = cmd.copy()
+          if video_path.startswith('https://www.youtube.com/'):
+              display_cmd[2] = '[YouTube URL redacted]'
+          print('Running: ' + ' '.join(display_cmd))
           result = subprocess.run(cmd, capture_output=True, text=True, cwd='.')
           print(f'stdout: {result.stdout}')
           print(f'stderr: {result.stderr}')
