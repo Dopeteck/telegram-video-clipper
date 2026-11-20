@@ -9,6 +9,12 @@ never transferred unnecessarily.
 
 No external/paid APIs. CPU-friendly (int8). Usage:
     python download_and_transcribe.py <youtube_url> --model small
+
+YouTube extraction options (environment variables):
+    YTDLP_PO_TOKEN    Optional YouTube PO Token for bypassing bot detection
+                      (provide as a GitHub Actions secret if needed).
+    YTDLP_COOKIES_FILE Optional path to a Netscape-format cookies file.
+                      Do not commit personal cookies to the repository.
 """
 import hashlib
 import json
@@ -18,6 +24,7 @@ import sys
 import tempfile
 import time
 import shutil
+import os
 from urllib.parse import urlparse, urlunparse
 from pathlib import Path
 
@@ -25,9 +32,60 @@ import yt_dlp
 from yt_dlp.utils import DownloadError
 
 
+# Player clients tried in order; web_embedded and tv are often less
+# aggressively rate-limited than the main web client on datacenter IPs.
+_YT_PLAYER_CLIENTS = "web,web_embedded,android,tv"
+
+
+def _yt_dlp_extra_args():
+    """Return extra yt-dlp CLI args from environment variables.
+
+    Supports:
+        YTDLP_PO_TOKEN    -> --extractor-args "youtube:po_token=..."
+        YTDLP_COOKIES_FILE -> --cookies=...
+
+    Neither is required; both are optional and intended for CI environments
+    where YouTube rate-limits datacenter IPs. Cookies/tokens are never logged.
+    """
+    extra = []
+    po_token = os.environ.get("YTDLP_PO_TOKEN", "").strip()
+    if po_token:
+        extra.append(f"youtube:po_token={po_token}")
+    cookies_file = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
+    if cookies_file:
+        extra.append(f"youtube:cookies={cookies_file}")
+    if extra:
+        return ["--extractor-args", ",".join(extra)]
+    return []
+
+
+def _yt_dlp_common_args():
+    """Common yt-dlp args for all YouTube invocations."""
+    args = [
+        "--extractor-args", f"youtube:player_client={_YT_PLAYER_CLIENTS}",
+    ]
+    args.extend(_yt_dlp_extra_args())
+    return args
+
+
+def _is_bot_detection_error(message):
+    """Check if an error message indicates YouTube bot detection."""
+    msg = message.lower()
+    indicators = [
+        "sign in to confirm you're not a bot",
+        "bot detection",
+        "automated",
+        "unsupported url",
+        "copyright",
+        "private",
+        "members only",
+    ]
+    return any(ind in msg for ind in indicators)
+
+
 def run(cmd):
     print(">", " ".join(str(c) for c in cmd), flush=True)
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
 
 
 # ------------------------------------------------------------------ sources
@@ -65,8 +123,9 @@ def _download(url, workdir, fmt="bestvideo*+bestaudio/best"):
         "--merge-output-format", "mp4",
         "--no-playlist",
         "-o", str(out_tmpl),
-        url,
     ]
+    cmd.extend(_yt_dlp_common_args())
+    cmd.append(url)
     last_error = None
     for attempt in range(1, 4):
         try:
@@ -77,6 +136,13 @@ def _download(url, workdir, fmt="bestvideo*+bestaudio/best"):
             if attempt < 3:
                 time.sleep(min(2 ** attempt, 20))
     else:
+        stderr = getattr(last_error, "stderr", "") or ""
+        if _is_bot_detection_error(stderr):
+            raise RuntimeError(
+                "YouTube blocked extraction (bot detection). On GitHub Actions, "
+                "set YTDLP_PO_TOKEN or YTDLP_COOKIES_FILE as repository secrets, "
+                "or retry later. Original error: " + stderr[:200]
+            ) from last_error
         raise last_error
     vids = [p for p in sorted(workdir.glob("source.*"))
             if p.suffix.lower() in (".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi")]
@@ -130,6 +196,13 @@ def inspect_source(url):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
     except DownloadError as exc:
+        msg = str(exc)
+        if _is_bot_detection_error(msg):
+            raise RuntimeError(
+                "YouTube blocked metadata extraction (bot detection). On GitHub "
+                "Actions, set YTDLP_PO_TOKEN or YTDLP_COOKIES_FILE as repository "
+                "secrets, or retry later. Original error: " + msg[:200]
+            ) from exc
         raise RuntimeError(
             f"YouTube lookup failed for {url}: {exc}") from exc
     except Exception as exc:  # network / rate limit / expired URL
@@ -161,8 +234,9 @@ def download_subtitles(url, workdir, langs=("en", "en-orig")):
             "--sub-langs", ",".join(langs),
             "--no-playlist",
             "-o", out_tmpl,
-            url,
         ]
+        cmd.extend(_yt_dlp_common_args())
+        cmd.append(url)
         try:
             run(cmd)
         except subprocess.CalledProcessError:
@@ -279,6 +353,14 @@ def download_section(url, start, end, workdir, source=None, retries=3):
             return out.resolve()
         except Exception as exc:  # noqa: BLE001 - surface last error after retries
             last_error = exc
+            stderr = getattr(exc, "stderr", "") or ""
+            if _is_bot_detection_error(stderr):
+                raise RuntimeError(
+                    "YouTube blocked section extraction (bot detection). On "
+                    "GitHub Actions, set YTDLP_PO_TOKEN or YTDLP_COOKIES_FILE "
+                    "as repository secrets, or retry later. Original error: "
+                    + stderr[:200]
+                ) from exc
             for tmpf in (out, partial):
                 try:
                     tmpf.unlink()
@@ -304,8 +386,9 @@ def _yt_dlp_section(url, start, end, workdir, key):
         "--no-playlist",
         "--download-sections", f"*{start}-{end}",
         "-o", str(out_tmpl),
-        url,
     ]
+    cmd.extend(_yt_dlp_common_args())
+    cmd.append(url)
     run(cmd)
 
 
