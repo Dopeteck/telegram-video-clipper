@@ -122,3 +122,162 @@ def test_blur_fill_render_is_vertical_with_captions(source, tmp_path):
     assert any(s["codec_name"] == "aac" for s in streams)
     assert out.with_suffix(".srt").is_file()
     assert "Hello" in out.with_suffix(".srt").read_text()
+
+
+@pytest.fixture
+def vertical_source(tmp_path):
+    path = tmp_path / "vertical.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc2=size=360x640:rate=12:duration=3", "-f", "lavfi", "-i",
+                    "sine=frequency=440:duration=3", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac", "-shortest", str(path)], check=True)
+    return path
+
+
+def _captured_command(source, tmp_path, words, aspect="9:16", blur_fill=False, layout="single",
+                      preview=True, brand=None):
+    """Run render and return the ffmpeg command used (without executing it)."""
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        out_path = Path(cmd[-1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        # Write a dummy valid file so ffprobe in post-processing (if any) works
+        out_path.write_bytes(b"\x00\x00\x00\x20ftypmp42\x00\x00\x00\x00")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    import render_clips as rc
+    orig_run = subprocess.run
+    try:
+        subprocess.run = fake_run
+        rc.render({"id": "001", "start": 0.5, "end": 2.5, "hook": "test"},
+            words, source, 640, 360 if aspect == "9:16" else 1920,
+            tmp_path, aspect,
+            out_dir=out_dir, blur_fill=blur_fill, layout=layout,
+            preview=preview, brand=brand)
+    finally:
+        subprocess.run = orig_run
+    return commands[0] if commands else None
+
+
+def test_landscape_9x16_auto_blur_fill_without_setting(source, tmp_path, monkeypatch):
+    """Landscape source in 9:16 gets automatic blur-fill even when blur_fill is False."""
+    words = [{"word": "Hello", "start": 0.5, "end": 1.0},
+             {"word": "world", "start": 1.1, "end": 2.0}]
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        out_path = Path(cmd[-1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"\x00\x00\x00\x20ftypmp42\x00\x00\x00\x00")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    render_clips.render({"id": "001", "start": 0.5, "end": 2.5, "hook": "test"},
+        words, source, 640, 360, tmp_path, "9:16",
+        out_dir=out_dir, blur_fill=False, preview=True)
+    filter_str = " ".join(str(c) for c in commands[0])
+    assert "gblur" in filter_str, f"Expected gblur for landscape 9:16, got: {filter_str}"
+
+
+def test_vertical_9x16_normal_framing(tmp_path, vertical_source, monkeypatch):
+    """Already-vertical source in 9:16 uses normal framing (crop/track), not blur-fill."""
+    words = [{"word": "Hello", "start": 0.5, "end": 1.0},
+             {"word": "world", "start": 1.1, "end": 2.0}]
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        out_path = Path(cmd[-1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"\x00\x00\x00\x20ftypmp42\x00\x00\x00\x00")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    render_clips.render({"id": "001", "start": 0.5, "end": 2.5, "hook": "test"},
+        words, vertical_source, 360, 640, tmp_path, "9:16",
+        out_dir=out_dir, blur_fill=False, preview=True)
+    filter_str = " ".join(str(c) for c in commands[0])
+    assert "gblur" not in filter_str, \
+        f"Expected no gblur for vertical 9:16, got: {filter_str}"
+
+
+def test_landscape_9x16_blur_fill_still_applied_when_disabled(source, tmp_path, monkeypatch):
+    """blur_fill=False does NOT disable automatic full-frame protection for landscape."""
+    words = [{"word": "Hello", "start": 0.5, "end": 1.0},
+             {"word": "world", "start": 1.1, "end": 2.0}]
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        out_path = Path(cmd[-1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"\x00\x00\x00\x20ftypmp42\x00\x00\x00\x00")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    render_clips.render({"id": "001", "start": 0.5, "end": 2.5, "hook": "test"},
+        words, source, 640, 360, tmp_path, "9:16",
+        out_dir=out_dir, blur_fill=False, preview=True)
+    filter_str = " ".join(str(c) for c in commands[0])
+    assert "gblur" in filter_str, \
+        f"blur_fill=False must not disable full-frame protection for landscape: {filter_str}"
+
+
+def test_vertical_9x16_blur_fill_setting_no_op(tmp_path, vertical_source, monkeypatch):
+    """blur_fill=True on already-vertical footage still uses normal framing."""
+    words = [{"word": "Hello", "start": 0.5, "end": 1.0},
+             {"word": "world", "start": 1.1, "end": 2.0}]
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        out_path = Path(cmd[-1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"\x00\x00\x00\x20ftypmp42\x00\x00\x00\x00")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    render_clips.render({"id": "001", "start": 0.5, "end": 2.5, "hook": "test"},
+        words, vertical_source, 360, 640, tmp_path, "9:16",
+        out_dir=out_dir, blur_fill=True, preview=True)
+    filter_str = " ".join(str(c) for c in commands[0])
+    assert "gblur" not in filter_str, \
+        f"blur_fill=True should not force blur-fill on vertical footage: {filter_str}"
+
+
+def test_landscape_9x16_blur_fill_explicit(source, tmp_path, monkeypatch):
+    """Explicit blur_fill=True on landscape in 9:16 uses blur-fill framing."""
+    words = [{"word": "Hello", "start": 0.5, "end": 1.0},
+             {"word": "world", "start": 1.1, "end": 2.0}]
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        out_path = Path(cmd[-1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"\x00\x00\x00\x20ftypmp42\x00\x00\x00\x00")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    render_clips.render({"id": "001", "start": 0.5, "end": 2.5, "hook": "test"},
+        words, source, 640, 360, tmp_path, "9:16",
+        out_dir=out_dir, blur_fill=True, preview=True)
+    filter_str = " ".join(str(c) for c in commands[0])
+    assert "gblur" in filter_str, f"Expected gblur for explicit blur_fill landscape: {filter_str}"
+
+

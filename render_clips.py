@@ -400,10 +400,15 @@ def render(seg, words, source, W, H, workdir, aspect, out_dir=None, style=DEFAUL
     build_ass(cap_words, start, start + dur, out_dir / "_caption.ass",
               tw, th, font_size, margin_v, style, brand)
 
-    # A landscape source forced into a vertical canvas must not be cropped.
-    # Fit the entire source frame over a blurred fill background instead. This
-    # protects faces, on-screen text and subtitles embedded in the source.
-    needs_track = cw < W * 0.95 and not blur_fill
+    # Automatic full-frame preservation: landscape source in a vertical
+    # canvas keeps the entire frame over a blurred background so faces and
+    # on-screen text are never cropped out.
+    is_landscape = W / float(H) > (9.0 / 16.0) * 1.15
+    auto_full_frame = aspect == "9:16" and is_landscape
+    use_blur_fill = blur_fill or auto_full_frame
+
+    needs_crop = cw < W * 0.95
+    needs_track = needs_crop and not use_blur_fill
     if layout == "split":
         # Keep every YUV420 panel even-sized. Older libass/ffmpeg builds can
         # crash on odd-height intermediate frames (854px drafts / 2 = 427).
@@ -415,7 +420,7 @@ def render(seg, words, source, W, H, workdir, aspect, out_dir=None, style=DEFAUL
               f"scale={tw}:{panel_h}[bottom];[top][bottom]vstack=inputs=2,"
               f"pad={tw}:{th}:0:0,subtitles=_caption.ass[v]")
         mode = "podcast split-screen"
-    elif blur_fill and cw < W * 0.95:
+    elif use_blur_fill and needs_crop:
         # Blurred background fill: keep the entire horizontal frame
         # (speaker and visual information preserved) scaled to fit the
         # vertical canvas; a blurred copy fills top/bottom. No aggressive
@@ -451,7 +456,7 @@ def render(seg, words, source, W, H, workdir, aspect, out_dir=None, style=DEFAUL
            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(out)]
     if brand and brand.get("logo"):
         width = max(20, round(brand["logo_width"] * tw / 1920))
-        if blur_fill:
+        if use_blur_fill:
             graph = (vf.replace("[v]", "[captioned]") +
                      f";[1:v]scale={width}:-1[logo];"
                      "[captioned][logo]overlay=W-w-24:24:eof_action=repeat[v]")
@@ -469,7 +474,7 @@ def render(seg, words, source, W, H, workdir, aspect, out_dir=None, style=DEFAUL
         cmd[cmd.index("-c:v"):cmd.index("-c:v")] = ["-filter_complex", graph, "-map", "[v]", "-map", "0:a?"]
     elif layout == "split":
         cmd[cmd.index("-c:v"):cmd.index("-c:v")] = ["-filter_complex", vf, "-map", "[v]", "-map", "0:a?"]
-    elif blur_fill:
+    elif use_blur_fill:
         cmd[cmd.index("-c:v"):cmd.index("-c:v")] = ["-filter_complex", vf, "-map", "[captioned]", "-map", "0:a?"]
     else:
         cmd[cmd.index("-c:v"):cmd.index("-c:v")] = ["-vf", vf]
