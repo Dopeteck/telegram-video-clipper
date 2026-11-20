@@ -102,7 +102,7 @@ jobs:
 
   deploy-worker:
     needs: [test-python, test-worker, test-miniapp]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -150,7 +150,7 @@ jobs:
 
   deploy-miniapp:
     needs: [test-python, test-worker, test-miniapp]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
