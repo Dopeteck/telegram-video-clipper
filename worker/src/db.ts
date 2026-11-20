@@ -11,8 +11,8 @@ export class Database {
     const expiresAt = now + (expiryHours * 3600 * 1000);
 
     await this.db.prepare(`
-      INSERT INTO uploads (id, telegram_user_id, telegram_chat_id, original_filename, object_key, file_size, mime_type, multipart_upload_id, status, created_at, updated_at, expires_at, completed_etag, completed_size, error_message)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO uploads (id, telegram_user_id, telegram_chat_id, original_filename, object_key, file_size, mime_type, multipart_upload_id, status, created_at, updated_at, expires_at, completed_etag, completed_size, error_message, source_url)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       id,
       upload.telegram_user_id,
@@ -28,7 +28,8 @@ export class Database {
       expiresAt,
       null, // completed_etag
       null, // completed_size
-      null  // error_message
+      null, // error_message
+      upload.source_url || null
     ).run();
 
     const result = await this.getUpload(id);

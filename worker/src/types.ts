@@ -39,6 +39,7 @@ export interface Upload {
   completed_etag: string | null;
   completed_size: number | null;
   error_message: string | null;
+  source_url?: string | null;
 }
 
 export interface UploadPart {

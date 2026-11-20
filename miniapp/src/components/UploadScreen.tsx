@@ -48,6 +48,8 @@ const UploadScreen: React.FC<Props> = ({ apiBaseUrl, initData, uploadId: initial
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [completed, setCompleted] = useState(false);
+  const [youtubeUrl, setYoutubeUrl] = useState('');
+  const [youtubeImporting, setYoutubeImporting] = useState(false);
   
   const abortControllerRef = useRef<AbortController | null>(null);
   const uploadStateRef = useRef({
@@ -109,6 +111,29 @@ const UploadScreen: React.FC<Props> = ({ apiBaseUrl, initData, uploadId: initial
     if (selectedFile) {
       setFile(selectedFile);
       setError(null);
+    }
+  };
+
+  const importYouTubeVideo = async () => {
+    const url = youtubeUrl.trim();
+    if (!url) {
+      setError('Paste a YouTube video link first.');
+      return;
+    }
+
+    setYoutubeImporting(true);
+    setError(null);
+    try {
+      await apiRequest('/api/youtube/import', {
+        method: 'POST',
+        body: JSON.stringify({ url, aspectRatio: '9:16' }),
+      });
+      setYoutubeUrl('');
+      onNavigate('uploads');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not import YouTube video');
+    } finally {
+      setYoutubeImporting(false);
     }
   };
 
@@ -377,6 +402,29 @@ const UploadScreen: React.FC<Props> = ({ apiBaseUrl, initData, uploadId: initial
   if (!uploadId && !file) {
     return (
       <div className="card">
+        <h2 className="card-title">Import from YouTube</h2>
+        <p style={{ color: 'var(--text-secondary)', marginBottom: 12 }}>
+          Paste a public YouTube video link. The video will be sent to the clipping workflow for processing.
+        </p>
+        <input
+          type="url"
+          value={youtubeUrl}
+          onChange={(e) => setYoutubeUrl(e.target.value)}
+          placeholder="https://www.youtube.com/watch?v=..."
+          aria-label="YouTube video URL"
+          autoComplete="off"
+          disabled={youtubeImporting}
+          style={{ width: '100%', marginBottom: 12 }}
+        />
+        <button className="btn btn-primary" onClick={importYouTubeVideo} disabled={youtubeImporting || !youtubeUrl.trim()}>
+          {youtubeImporting ? 'Importing video...' : '▶ Import YouTube Video'}
+        </button>
+        {error && <div className="error">{error}</div>}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '20px 0', color: 'var(--text-secondary)', fontSize: 12 }}>
+          <div style={{ flex: 1, height: 1, background: 'var(--border-color, #ddd)' }} />
+          OR UPLOAD A FILE
+          <div style={{ flex: 1, height: 1, background: 'var(--border-color, #ddd)' }} />
+        </div>
         <h2 className="card-title">Upload Video</h2>
         <p style={{ color: 'var(--text-secondary)', marginBottom: 16 }}>
           Select a video from your device to upload it directly to secure cloud storage.
