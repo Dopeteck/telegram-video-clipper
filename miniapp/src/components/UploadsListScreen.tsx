@@ -9,6 +9,7 @@ interface Upload {
   status: string;
   created_at: number;
   error_message: string | null;
+  source_url?: string | null;
 }
 
 type Screen = 'upload' | 'uploads' | 'settings' | 'help';
@@ -258,7 +259,7 @@ const UploadsListScreen: React.FC<Props> = ({ apiBaseUrl, initData, onNavigate }
               <div className="upload-details">
                 <div className="upload-filename">{upload.original_filename}</div>
                 <div className="upload-meta">
-                  {formatBytes(upload.file_size)} • {formatDate(upload.created_at)}
+                  {upload.source_url ? 'YouTube video' : formatBytes(upload.file_size)} • {formatDate(upload.created_at)}
                 </div>
               </div>
               <span className={getStatusClass(upload.status)}>{getStatusLabel(upload.status)}</span>
@@ -274,7 +275,7 @@ const UploadsListScreen: React.FC<Props> = ({ apiBaseUrl, initData, onNavigate }
               </button>
             )}
 
-            {upload.status === 'uploaded' && (
+            {upload.status === 'uploaded' && !upload.source_url && (
               <button 
                 className="btn btn-primary" 
                 onClick={() => handleProcess(upload.id)}
