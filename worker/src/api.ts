@@ -354,6 +354,81 @@ const ALLOWED_ASPECT_RATIOS = ['9:16', '16:9', '1:1'];
 const ALLOWED_CAPTION_STYLES = ['default', 'hormozi', 'mrbeast', 'podcast'];
 const ACTIVE_JOB_STATUSES: Job['status'][] = ['pending', 'queued', 'processing'];
 
+function normalizeYouTubeUrl(input: unknown): string | null {
+  if (typeof input !== 'string' || input.length > 2048) return null;
+  try {
+    const parsed = new URL(input.trim());
+    const host = parsed.hostname.toLowerCase();
+    if (parsed.protocol !== 'https:' || !['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be'].includes(host)) return null;
+
+    let videoId = '';
+    if (host === 'youtu.be') {
+      videoId = parsed.pathname.split('/').filter(Boolean)[0] || '';
+    } else if (parsed.pathname === '/watch') {
+      videoId = parsed.searchParams.get('v') || '';
+    } else {
+      const match = parsed.pathname.match(/^\/(?:shorts|live|embed)\/([A-Za-z0-9_-]{11})(?:\/|$)/);
+      videoId = match?.[1] || '';
+    }
+    return /^[A-Za-z0-9_-]{11}$/.test(videoId)
+      ? `https://www.youtube.com/watch?v=${videoId}`
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+api.post('/youtube/import', async (c) => {
+  const user = c.get('telegramUser');
+  const chat = c.get('telegramChat');
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json(createApiResponse(false, undefined, 'Invalid JSON body', 'BAD_REQUEST'), 400);
+  }
+
+  const sourceUrl = normalizeYouTubeUrl(body.url);
+  if (!sourceUrl) {
+    return c.json(createApiResponse(false, undefined, 'Enter a valid YouTube video link (playlists and other websites are not supported).', 'INVALID_YOUTUBE_URL'), 400);
+  }
+
+  const aspectRatio = body.aspectRatio === undefined ? '9:16' : body.aspectRatio;
+  if (typeof aspectRatio !== 'string' || !ALLOWED_ASPECT_RATIOS.includes(aspectRatio)) {
+    return c.json(createApiResponse(false, undefined, 'Invalid aspectRatio', 'BAD_REQUEST'), 400);
+  }
+  const captionStyle = body.captionStyle === undefined ? 'default' : body.captionStyle;
+  if (typeof captionStyle !== 'string' || !ALLOWED_CAPTION_STYLES.includes(captionStyle)) {
+    return c.json(createApiResponse(false, undefined, 'Invalid captionStyle', 'BAD_REQUEST'), 400);
+  }
+
+  const db = new Database(c.env.DB, c.env);
+  const uploadId = `youtube_${generateId()}_${user.id}`;
+  const videoId = new URL(sourceUrl).searchParams.get('v')!;
+  try {
+    const upload = await db.createUpload({
+      id: uploadId,
+      telegram_user_id: user.id,
+      telegram_chat_id: chat?.id ?? null,
+      original_filename: `youtube-${videoId}.mp4`,
+      object_key: `youtube-sources/${user.id}/${uploadId}.source`,
+      file_size: 0,
+      mime_type: 'video/mp4',
+      status: 'uploaded',
+      source_url: sourceUrl,
+    });
+    const job = await createProcessingJob(
+      c.env, db, upload.id, user.id, aspectRatio, captionStyle,
+      body.enableTighten === true, body.enableLoudnorm === true
+    );
+    return c.json(createApiResponse(true, job));
+  } catch (error) {
+    console.error('YouTube import job creation failed:', error);
+    const message = error instanceof Error ? error.message : 'Failed to import YouTube video';
+    return c.json(createApiResponse(false, undefined, message, 'YOUTUBE_IMPORT_FAILED'), 502);
+  }
+});
+
 api.post('/jobs', async (c) => {
   const user = c.get('telegramUser');
 
@@ -758,6 +833,7 @@ async function dispatchWorkflow(env: Env, jobId: string, uploadId: string, teleg
           upload_id: uploadId,
           telegram_user_id: telegramUserId,
           object_key: upload.object_key,
+          ...(upload.source_url ? { source_url: upload.source_url } : {}),
         },
       }),
     });
