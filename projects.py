@@ -16,10 +16,10 @@ from captions import update_transcript
 DEFAULT_OPTIONS = {"aspect": "16:9", "style": "default", "tighten": False,
                    "loudnorm": False, "whisper_model": "medium", "device": "cpu",
                    "language": None,
-                   "min_len": 20, "max_len": 75, "max_clips": 10, "min_score": None,
+                   "min_len": 25, "max_len": 40, "max_clips": 10, "min_score": None,
                    "llm": None, "search": None, "semantic": None,
                    "embed_model": "nomic-embed-text", "brand": None,
-                   "layout": "single", "centers": [0.25, 0.75]}
+                   "layout": "single", "centers": [0.25, 0.75], "blur_fill": False}
 
 
 def digest(value):
@@ -73,7 +73,7 @@ def validate_options(options):
     for key in ("whisper_model", "embed_model", "llm", "search", "semantic", "brand"):
         if result[key] is not None and (not isinstance(result[key], str) or len(result[key]) > 2000):
             raise ValueError(f"{key} must be text.")
-    for key in ("tighten", "loudnorm"):
+    for key in ("tighten", "loudnorm", "blur_fill"):
         if not isinstance(result[key], bool):
             raise ValueError(f"{key} must be true or false.")
     return result
@@ -161,25 +161,70 @@ def run_project(path, action="all", preview=False, pick=None, resume=True, progr
             stage("source")
             source_input = state["source"]
             local = Path(source_input).expanduser()
-            identity = file_identity(local) if local.is_file() else source_input
-            source_key = digest(identity)
-            source = Path(state.get("video", "__missing__"))
-            if not resume or state["cache"].get("source") != source_key or not source.is_file():
-                source = dt.resolve_source(source_input, path)
-                state["video"] = str(source)
-                state["cache"]["source"] = source_key
-                save_project(path, state)
+            if local.is_file():
+                identity = file_identity(local)
+                source_key = digest(identity)
+                source = Path(state.get("video", "__missing__"))
+                if not resume or state["cache"].get("source") != source_key or not source.is_file():
+                    source = dt.resolve_source(source_input, path)
+                    state["video"] = str(source)
+                    state["cache"]["source"] = source_key
+                    state.pop("yt_url", None)
+                    state.pop("yt_meta", None)
+                    state.pop("sub_path", None)
+                    save_project(path, state)
+            elif dt.is_youtube_url(source_input):
+                # YouTube: metadata and English subtitles only. The full source
+                # file is never downloaded here - only selected sections are
+                # extracted later, at render time.
+                source_key = digest(["yt", source_input])
+                if not resume or state["cache"].get("source") != source_key:
+                    yt_meta = dt.inspect_source(source_input)
+                    sub_path = dt.download_subtitles(source_input, path)
+                    state["video"] = None
+                    state["yt_url"] = source_input
+                    state["yt_meta"] = yt_meta
+                    state["sub_path"] = str(sub_path) if sub_path else None
+                    state["cache"]["source"] = source_key
+                    save_project(path, state)
+            else:
+                identity = source_input
+                source_key = digest(identity)
+                source = Path(state.get("video", "__missing__"))
+                if not resume or state["cache"].get("source") != source_key or not source.is_file():
+                    source = dt.resolve_source(source_input, path)
+                    state["video"] = str(source)
+                    state["cache"]["source"] = source_key
+                    save_project(path, state)
             stage("transcribe")
-            transcript_key = digest([file_identity(source), options["whisper_model"],
-                                     options["device"], options["language"]])
             transcript_path = path / "transcript.json"
-            if not resume or state["cache"].get("transcript") != transcript_key or not transcript_path.exists():
-                dt.transcribe(source, path, options["whisper_model"], options["device"],
-                              "int8" if options["device"] == "cpu" else "default",
-                              options["language"])
-                state["cache"]["transcript"] = transcript_key
-                state["source_identity"] = file_identity(source)
-                save_project(path, state)
+            sub_path = state.get("sub_path")
+            if sub_path:
+                source = None
+                transcript_key = digest(["subs", sub_path, state["source"]])
+                if not resume or state["cache"].get("transcript") != transcript_key \
+                        or not transcript_path.exists():
+                    dt.subtitles_to_transcript(sub_path, state["source"],
+                                               state["yt_meta"]["duration"],
+                                               transcript_path)
+                    state["cache"]["transcript"] = transcript_key
+                    state["source_identity"] = None
+                    save_project(path, state)
+            else:
+                source = Path(state.get("video", "__missing__"))
+                if not source.is_file():
+                    source = dt.resolve_source(state["source"], path)
+                    state["video"] = str(source)
+                    save_project(path, state)
+                transcript_key = digest([file_identity(source), options["whisper_model"],
+                                         options["device"], options.get("language")])
+                if not resume or state["cache"].get("transcript") != transcript_key or not transcript_path.exists():
+                    dt.transcribe(source, path, options["whisper_model"], options["device"],
+                                  "int8" if options["device"] == "cpu" else "default",
+                                  options.get("language"))
+                    state["cache"]["transcript"] = transcript_key
+                    state["source_identity"] = file_identity(source)
+                    save_project(path, state)
             stage("score")
             data = read_json(transcript_path)
             selection = {k: options[k] for k in ("llm", "search", "semantic", "embed_model",
@@ -194,9 +239,7 @@ def run_project(path, action="all", preview=False, pick=None, resume=True, progr
         else:
             stage("render preview" if preview else "render")
             data = read_json(path / "transcript.json")
-            source = Path(data["video"]).resolve()
-            if state.get("source_identity") and state["source_identity"] != file_identity(source):
-                raise ValueError("Source video changed since transcription. Find clips again before rendering.")
+            yt_url = state.get("yt_url")
             segments = validate_segments(read_json(path / "segments.json"), data["duration"])
             # Assign stable IDs before subset selection so names do not shift.
             segments = [{**s, "id": f"{i:03}"} for i, s in enumerate(segments, 1)]
@@ -205,20 +248,54 @@ def run_project(path, action="all", preview=False, pick=None, resume=True, progr
             out.mkdir(exist_ok=True)
             brand = branding.load_brand(options["brand"]) if options["brand"] else None
             logo_identity = file_identity(brand["logo"]) if brand and brand["logo"] else None
-            W, H = render_clips.ffprobe_dims(source)
+            compute_type = "int8" if options["device"] == "cpu" else "default"
             outputs = []
             for i, segment in enumerate(segments, 1):
                 stage(f"{'preview' if preview else 'render'} {i}/{len(segments)}")
-                key = digest([segment, data["words"], file_identity(source), options, brand, logo_identity, preview])
-                cached = state["renders"].get(key)
-                expected_suffixes = [".mp4", ".srt"] if preview else [".mp4", ".srt", ".png", ".meta.json"]
-                if resume and cached and all(Path(cached).with_suffix(ext).is_file() for ext in expected_suffixes):
-                    outputs.append(cached)
-                    continue
-                output = render_clips.render({**segment, "id": segment["id"] + "-" + key[:8]}, data["words"], source, W, H, path,
+                if yt_url:
+                    # Calculate cache key first so completed sections are
+                    # skipped without any YouTube download or transcription.
+                    key = digest([segment, yt_url, options, brand, logo_identity, preview])
+                    cached = state["renders"].get(key)
+                    expected_suffixes = [".mp4", ".srt"] if preview else [".mp4", ".srt", ".png", ".meta.json"]
+                    if resume and cached and render_clips.validate_output(cached, expected_suffixes):
+                        outputs.append(cached)
+                        continue
+                    # Remote section extraction: download only the approved range
+                    # directly from YouTube, never the full source. Max 1080p.
+                    section = dt.download_section(yt_url, float(segment["start"]), float(segment["end"]),
+                                                  path / "_sections")
+                    try:
+                        section_words, _ = dt.transcribe_words(section, options["whisper_model"],
+                                                               options["device"], compute_type)
+                        dur = round(float(segment["end"]) - float(segment["start"]), 3)
+                        render_seg = {**segment, "id": segment["id"] + "-section",
+                                      "start": 0.0, "end": dur}
+                        W, H = render_clips.ffprobe_dims(section)
+                        output = render_clips.render(render_seg, section_words, section, W, H, path,
+                            options["aspect"], out_dir=out, style=options["style"],
+                            do_tighten=options["tighten"], loudnorm=options["loudnorm"],
+                            preview=preview, brand=brand,
+                            layout=options["layout"], centers=options["centers"],
+                            blur_fill=options["blur_fill"])
+                    finally:
+                        dt.cleanup_files(section)
+                else:
+                    source = Path(data["video"]).resolve()
+                    if state.get("source_identity") and state["source_identity"] != file_identity(source):
+                        raise ValueError("Source video changed since transcription. Find clips again before rendering.")
+                    W, H = render_clips.ffprobe_dims(source)
+                    key = digest([segment, data["words"], file_identity(source), options, brand, logo_identity, preview])
+                    cached = state["renders"].get(key)
+                    expected_suffixes = [".mp4", ".srt"] if preview else [".mp4", ".srt", ".png", ".meta.json"]
+                    if resume and cached and render_clips.validate_output(cached, expected_suffixes):
+                        outputs.append(cached)
+                        continue
+                    output = render_clips.render({**segment, "id": segment["id"] + "-" + key[:8]}, data["words"], source, W, H, path,
                     options["aspect"], out_dir=out, style=options["style"],
                     do_tighten=options["tighten"], loudnorm=options["loudnorm"], preview=preview,
-                    brand=brand, layout=options["layout"], centers=options["centers"])
+                    brand=brand, layout=options["layout"], centers=options["centers"],
+                    blur_fill=options["blur_fill"])
                 state["renders"][key] = str(output)
                 outputs.append(str(output))
                 save_project(path, state)

@@ -14,12 +14,12 @@
 ## Product facts
 
 - `python dashboard.py` opens Studio at `http://127.0.0.1:8765`; `python chopify.py SOURCE` runs the CLI.
-- Inputs: local MP4, MOV, MKV, WebM, M4V, AVI, or yt-dlp-supported HTTP(S) URLs.
-- Pipeline: source -> faster-whisper timestamps -> heuristic/local LLM/keyword/semantic selection -> review -> ffmpeg.
-- Features: resumable projects, serial batch queue, editable captions and clip ranges, SRT, JSON brand presets with logo, two-panel podcast framing, filler/silence removal, loudness normalization, single-frame face tracking.
-- Outputs: 16:9, 9:16, or 1:1 H.264 MP4; AAC if source audio exists; SRT for drafts and final clips; poster and metadata JSON for final clips.
+- Inputs: local MP4, MOV, MKV, WebM, M4V, AVI, or yt-dlp-supported HTTP(S) URLs; YouTube URLs are ingested metadata-first (English subtitles only) with section-based extraction of approved timestamp ranges, so large sources are never downloaded whole.
+- Pipeline: source -> faster-whisper timestamps -> heuristic/local LLM/keyword/semantic selection -> human review -> ffmpeg.
+- Features: resumable projects, serial batch queue, editable captions and clip ranges, SRT, JSON brand presets with logo, two-panel podcast framing, filler/silence removal, loudness normalization, single-frame face tracking, vertical 9:16 blur-fill framing, per-section retries and temp-file cleanup.
+- Outputs: 16:9, 9:16, or 1:1 H.264 MP4 (default 9:16, 1080 × 1920, 25–40s clips); AAC if source audio exists; SRT for drafts and final clips; poster and metadata JSON for final clips.
 - Semantic search uses optional local Ollama embeddings at `127.0.0.1:11434`, default `nomic-embed-text`. LLM selection uses a separate optional local chat model.
-- Requirements: Python 3.11+, ffmpeg/ffprobe with libx264/AAC/libass, requirements.txt. Windows is primary; CI also tests Linux.
+- Requirements: Python 3.11+, ffmpeg/ffprobe with libx264/AAC/libass, requirements.txt (yt-dlp, faster-whisper, opencv-python). Windows is primary; CI also tests Linux.
 - License/price: MIT; no subscription or paid inference API. Hardware, storage and setup downloads are supplied by the user.
 
 ## Limitations
@@ -28,6 +28,7 @@
 - Scores are editing suggestions, not virality predictions. Review boundaries and captions.
 - Split-screen uses fixed adjustable crop centers, not speaker diarization or two-face tracking.
 - Heuristic cue lists are English-oriented; transcription and punctuation vary by language.
+- YouTube ingestion depends on network access and is subject to YouTube rate limits and bot checks; failed downloads surface as retryable job errors and may require cookies via yt-dlp configuration.
 - No social publishing/scheduling, cloud collaboration, hosted processing, translation, bilingual captions, or dubbing.
 - Studio binds to loopback for one trusted local user, not public/multi-tenant hosting.
 
@@ -37,4 +38,4 @@
 - [License](https://github.com/mehbul/chopify/blob/main/LICENSE)
 - [Documentation website](https://mehbul.github.io/chopify/)
 
-Updated: 2026-10-23. This file is a factual navigation aid, not a search-engine requirement or ranking signal.
+Updated: 2026-11-18. This file is a factual navigation aid, not a search-engine requirement or ranking signal.

@@ -16,6 +16,7 @@ import download_and_transcribe  # noqa: E402
 import tighten              # noqa: E402
 import render_clips         # noqa: E402
 import chopify              # noqa: E402
+import projects             # noqa: E402
 
 
 # ----------------------------------------------------------------- fixtures
@@ -634,4 +635,16 @@ class TestPreflight:
         assert len(problems) == 1
         assert "faster_whisper" in problems[0]
         assert "pip install" in problems[0]
+
+
+class TestProjectsOptions:
+    def test_blur_fill_accepted(self):
+        opts = projects.validate_options({"blur_fill": True})
+        assert opts["blur_fill"] is True
+        assert opts["min_len"] == 25 and opts["max_len"] == 40
+
+    def test_blur_fill_must_be_bool(self):
+        with pytest.raises(ValueError):
+            projects.validate_options({"blur_fill": "yes"})
+
 

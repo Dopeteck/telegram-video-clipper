@@ -92,6 +92,29 @@ def ffprobe_dims(path):
     return int(w), int(h)
 
 
+def validate_output(output_path, expected_suffixes):
+    """Return True only if every expected output file exists, is non-empty,
+    the MP4 passes ffprobe validation, and any metadata JSON parses.
+    Used to decide whether a cached render can be safely skipped."""
+    base = Path(output_path)
+    for ext in expected_suffixes:
+        p = base.with_suffix(ext)
+        if not p.is_file() or p.stat().st_size == 0:
+            return False
+    mp4 = base.with_suffix(".mp4")
+    try:
+        ffprobe_dims(mp4)
+    except Exception:
+        return False
+    meta = base.with_suffix(".meta.json")
+    if meta.is_file():
+        try:
+            json.loads(meta.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+    return True
+
+
 def crop_for(W, H, tw, th):
     """Largest centred crop of the WxH source matching the target aspect."""
     tar = tw / float(th)
@@ -339,7 +362,7 @@ def write_meta(seg, out_path):
 
 def render(seg, words, source, W, H, workdir, aspect, out_dir=None, style=DEFAULT_STYLE,
            do_tighten=False, loudnorm=False, preview=False, brand=None,
-           layout="single", centers=(0.25, 0.75)):
+           layout="single", centers=(0.25, 0.75), blur_fill=False):
     from captions import write_srt
     out_dir = (Path(out_dir) if out_dir else default_out()).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -377,11 +400,15 @@ def render(seg, words, source, W, H, workdir, aspect, out_dir=None, style=DEFAUL
     build_ass(cap_words, start, start + dur, out_dir / "_caption.ass",
               tw, th, font_size, margin_v, style, brand)
 
-    # A landscape source forced into a vertical canvas must not be cropped.
-    # Fit the entire source frame over a blurred fill background instead. This
-    # protects faces, on-screen text and subtitles embedded in the source.
-    preserve_full_frame = aspect == "9:16" and (W / float(H)) > (9.0 / 16.0) * 1.15
-    needs_track = cw < W * 0.95 and not preserve_full_frame
+    # Automatic full-frame preservation: landscape source in a vertical
+    # canvas keeps the entire frame over a blurred background so faces and
+    # on-screen text are never cropped out.
+    is_landscape = W / float(H) > (9.0 / 16.0) * 1.15
+    auto_full_frame = aspect == "9:16" and is_landscape
+    use_blur_fill = blur_fill or auto_full_frame
+
+    needs_crop = cw < W * 0.95
+    needs_track = needs_crop and not use_blur_fill
     if layout == "split":
         # Keep every YUV420 panel even-sized. Older libass/ffmpeg builds can
         # crash on odd-height intermediate frames (854px drafts / 2 = 427).
@@ -393,9 +420,22 @@ def render(seg, words, source, W, H, workdir, aspect, out_dir=None, style=DEFAUL
               f"scale={tw}:{panel_h}[bottom];[top][bottom]vstack=inputs=2,"
               f"pad={tw}:{th}:0:0,subtitles=_caption.ass[v]")
         mode = "podcast split-screen"
-    elif preserve_full_frame:
-        vf = build_vertical_fit_filter(tw, th)
-        mode = "full-frame-fit-blurred-background"
+    elif use_blur_fill and needs_crop:
+        # Blurred background fill: keep the entire horizontal frame
+        # (speaker and visual information preserved) scaled to fit the
+        # vertical canvas; a blurred copy fills top/bottom. No aggressive
+        # crop, so nothing is cut out of the frame.
+        mh = max(2, int(round(H * tw / W)))
+        mh -= mh % 2
+        ov_y = max(0, (th - mh) // 2)
+        vf = (
+            f"[0:v]scale={tw}:-2[main];"
+            f"[0:v]scale={tw}:{th}:force_original_aspect_ratio=increase,"
+            f"crop={tw}:{th},gblur=sigma=20[bg];"
+            f"[bg][main]overlay=0:{ov_y}[framed];"
+            f"[framed]subtitles=_caption.ass[captioned]"
+        )
+        mode = "blur-fill"
     elif needs_track:
         track = smooth_track(detect_track(render_src, start, dur, W, workdir), W, cw)
         build_sendcmd(track, cw, out_dir / "_crop.cmd")
@@ -416,7 +456,7 @@ def render(seg, words, source, W, H, workdir, aspect, out_dir=None, style=DEFAUL
            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(out)]
     if brand and brand.get("logo"):
         width = max(20, round(brand["logo_width"] * tw / 1920))
-        if preserve_full_frame:
+        if use_blur_fill:
             graph = (vf.replace("[v]", "[captioned]") +
                      f";[1:v]scale={width}:-1[logo];"
                      "[captioned][logo]overlay=W-w-24:24:eof_action=repeat[v]")
@@ -432,8 +472,10 @@ def render(seg, words, source, W, H, workdir, aspect, out_dir=None, style=DEFAUL
         pos = cmd.index("-t")
         cmd[pos:pos] = ["-i", brand["logo"]]
         cmd[cmd.index("-c:v"):cmd.index("-c:v")] = ["-filter_complex", graph, "-map", "[v]", "-map", "0:a?"]
-    elif layout == "split" or preserve_full_frame:
+    elif layout == "split":
         cmd[cmd.index("-c:v"):cmd.index("-c:v")] = ["-filter_complex", vf, "-map", "[v]", "-map", "0:a?"]
+    elif use_blur_fill:
+        cmd[cmd.index("-c:v"):cmd.index("-c:v")] = ["-filter_complex", vf, "-map", "[captioned]", "-map", "0:a?"]
     else:
         cmd[cmd.index("-c:v"):cmd.index("-c:v")] = ["-vf", vf]
     if loudnorm:

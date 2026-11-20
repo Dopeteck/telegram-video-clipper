@@ -50,8 +50,9 @@
 | Feature | How it helps |
 | --- | --- |
 | **Local browser dashboard** | Queue videos, watch job progress, review candidates, edit words and timestamps, and download exports. |
-| **Local video input** | Use MP4, MOV, MKV, WebM, M4V, or AVI recordings directly, or download a yt-dlp-supported URL. |
-| **Resumable projects** | Reuse matching downloads, transcripts, and completed renders. Retry a failed job without discarding successful clips. |
+| **Local video input** | Use MP4, MOV, MKV, WebM, M4V, or AVI recordings directly, or paste a YouTube URL in Studio (alongside file paths) — metadata and English subtitles are fetched without downloading the full video. |
+| **Remote source extraction** | YouTube timestamp ranges are extracted with yt-dlp section downloading at a 1080p maximum, so a multi-GB source is never transferred whole; temporary section files are cleaned up after extraction. |
+| **Resumable projects** | Reuse matching downloads, transcripts, and completed renders. Retry a failed job without discarding successful clips. Individual sections retry independently. |
 | **Batch queue** | Add one source per line in Studio or use a JSON list in the CLI. Each video has an isolated project folder. |
 | **Caption editor and SRT export** | Fix transcription mistakes before rendering. Burnt captions and SRT files share the same timeline, including tightened cuts. |
 | **Reusable brand presets** | Save caption font, text/highlight colors, size, position, and an optional logo in JSON. |
@@ -60,6 +61,7 @@
 | **Clip selection and review** | Heuristic scoring, optional local LLM scoring, keyword search, numbered selection, editable start/end times, and fast draft previews. |
 | **Social video exports** | 16:9, 9:16, or 1:1; H.264 video, AAC when source audio exists; SRT, poster, title/description/hashtag JSON. |
 | **Face tracking and cleanup** | Single-frame vertical crops follow a detected face; optional filler/silence removal and audio loudness normalization. |
+| **Blur-fill vertical framing** | `--blur-fill` keeps the entire horizontal frame scaled to fit the 9:16 canvas with a blurred copy filling top/bottom, so nothing is cropped out when reframing horizontal footage. |
 
 Clip selection favors sentence endings with punctuation. Scores are editing suggestions, **not predictions or guarantees of virality**. Review the results before publishing.
 
@@ -90,15 +92,18 @@ YouTube downloads may also require Deno: `winget install DenoLand.Deno`. A prefl
 
 After installing dependencies, run with the virtual environment's Python (or activate it and use `python`):
 
+Default clip window is 25–40 seconds at 1080 × 1920 (`--aspect 9:16 --min-len 25 --max-len 40`).
+
 ```powershell
 # Local recording or online video
 python chopify.py "C:\Videos\podcast.mp4" --aspect 9:16
-python chopify.py "https://youtube.com/watch?v=VIDEO_ID"
+python chopify.py "https://youtube.com/watch?v=VIDEO_ID" --aspect 9:16 --blur-fill
 
 # Prepare once, inspect candidates, then render selected clips
 python chopify.py "C:\Videos\podcast.mp4" --workdir work --action prepare
 python chopify.py --project work --action render --clips 1,3 --preview
 python chopify.py --project work --action render --clips 1,3
+```
 
 # Search the transcript using keywords or meaning
 python chopify.py "recording.mp4" --search "pricing"
@@ -235,4 +240,4 @@ python -m compileall -q chopify.py dashboard.py projects.py captions.py branding
 
 Tests include real ffmpeg renders when ffmpeg is installed; speech models and Ollama are not required for the automated suite. Keep videos, transcripts, generated clips, and local brand presets out of Git. Use footage you have permission to process.
 
-Maintained by [mehbul](https://github.com/mehbul). [MIT license](LICENSE). Last documentation update: **2026-10-23**.
+Maintained by [mehbul](https://github.com/mehbul). [MIT license](LICENSE). Last documentation update: **2026-11-18**.
