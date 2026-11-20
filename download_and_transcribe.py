@@ -37,55 +37,90 @@ from yt_dlp.utils import DownloadError
 _YT_PLAYER_CLIENTS = "web,web_embedded,android,tv"
 
 
-def _yt_dlp_extra_args():
-    """Return extra yt-dlp CLI args from environment variables.
+def _redact_cmd(cmd):
+    """Return a copy of cmd with sensitive arguments redacted for logging.
 
-    Supports:
-        YTDLP_PO_TOKEN    -> --extractor-args "youtube:po_token=..."
-        YTDLP_COOKIES_FILE -> --cookies=...
-
-    Neither is required; both are optional and intended for CI environments
-    where YouTube rate-limits datacenter IPs. Cookies/tokens are never logged.
+    Redacts:
+        - --cookies <path> -> --cookies <redacted>
+        - --extractor-args containing po_token or cookies -> <redacted> value
     """
-    extra = []
+    redacted = []
+    i = 0
+    while i < len(cmd):
+        c = cmd[i]
+        if c == "--cookies":
+            redacted.append(c)
+            if i + 1 < len(cmd):
+                redacted.append("<redacted>")
+                i += 2
+                continue
+        elif c == "--extractor-args":
+            redacted.append(c)
+            if i + 1 < len(cmd):
+                val = cmd[i + 1]
+                if "po_token" in val or "cookies" in val:
+                    redacted.append("<redacted>")
+                else:
+                    redacted.append(val)
+                i += 2
+                continue
+        redacted.append(c)
+        i += 1
+    return redacted
+
+
+def run(cmd):
+    print(">", " ".join(str(c) for c in _redact_cmd(cmd)), flush=True)
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+
+def _yt_dlp_extractor_args():
+    """Build a single --extractor-args combining player_client and po_token.
+
+    Combines both into one --extractor-args value so they don't conflict:
+        --extractor-args "youtube:player_client=web,web_embedded,android,tv,po_token=..."
+    """
+    parts = [f"player_client={_YT_PLAYER_CLIENTS}"]
     po_token = os.environ.get("YTDLP_PO_TOKEN", "").strip()
     if po_token:
-        extra.append(f"youtube:po_token={po_token}")
-    cookies_file = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
-    if cookies_file:
-        extra.append(f"youtube:cookies={cookies_file}")
-    if extra:
-        return ["--extractor-args", ",".join(extra)]
-    return []
+        parts.append(f"po_token={po_token}")
+    return ["--extractor-args", f"youtube:{','.join(parts)}"]
 
 
 def _yt_dlp_common_args():
-    """Common yt-dlp args for all YouTube invocations."""
-    args = [
-        "--extractor-args", f"youtube:player_client={_YT_PLAYER_CLIENTS}",
-    ]
-    args.extend(_yt_dlp_extra_args())
+    """Common yt-dlp CLI args for all YouTube invocations.
+
+    Includes player_client rotation and optional po_token via --extractor-args,
+    plus optional cookies file via the dedicated --cookies option.
+    """
+    args = _yt_dlp_extractor_args()
+    cookies_file = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
+    if cookies_file:
+        cookies_path = Path(cookies_file)
+        if not cookies_path.is_file():
+            raise RuntimeError(f"YTDLP_COOKIES_FILE not found: {cookies_file}")
+        if not os.access(cookies_path, os.R_OK):
+            raise RuntimeError(f"YTDLP_COOKIES_FILE not readable: {cookies_file}")
+        args.extend(["--cookies", str(cookies_path)])
     return args
 
 
 def _is_bot_detection_error(message):
-    """Check if an error message indicates YouTube bot detection."""
+    """Check if an error message indicates YouTube bot detection.
+
+    Narrowly scoped to actual YouTube bot/authentication restriction messages.
+    Does NOT classify generic errors (private, copyright, members only,
+    unsupported URL) as bot detection.
+    """
     msg = message.lower()
     indicators = [
         "sign in to confirm you're not a bot",
+        "confirm you're not a bot",
         "bot detection",
-        "automated",
-        "unsupported url",
-        "copyright",
-        "private",
-        "members only",
+        "automated queries",
+        "automated traffic",
     ]
     return any(ind in msg for ind in indicators)
-
-
-def run(cmd):
-    print(">", " ".join(str(c) for c in cmd), flush=True)
-    subprocess.run(cmd, check=True, capture_output=True, text=True)
 
 
 # ------------------------------------------------------------------ sources

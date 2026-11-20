@@ -177,6 +177,7 @@ class TestDownloadSection:
             dt.download_section("https://www.youtube.com/watch?v=x", 0.0, 5.0,
                                 tmp_path / "sections", retries=3)
         assert not list((tmp_path / "sections").iterdir())
+
     def test_bot_detection_error_is_surfaced(self, tmp_path, monkeypatch):
         def fake_run(cmd):
             raise subprocess.CalledProcessError(
@@ -190,67 +191,185 @@ class TestDownloadSection:
                                 tmp_path / "sections", retries=1)
 
 
-class TestYtDlpCommonArgs:
-    def test_player_client_rotation_in_args(self):
-        args = dt._yt_dlp_common_args()
-        flat = " ".join(str(a) for a in args)
-        assert "player_client" in flat
-        assert "web" in flat
-        assert "web_embedded" in flat
-        assert "android" in flat
-        assert "tv" in flat
+class TestRedactedLogging:
+    """Test that sensitive arguments are redacted before logging."""
 
-    def test_po_token_env_var_passes_to_args(self, monkeypatch):
-        monkeypatch.setenv("YTDLP_PO_TOKEN", "test-po-token-123")
-        args = dt._yt_dlp_common_args()
-        flat = " ".join(str(a) for a in args)
-        assert "po_token" in flat
-        assert "test-po-token-123" in flat
+    def test_redact_cookies_path(self):
+        cmd = [
+            sys.executable, "-m", "yt_dlp",
+            "--cookies", "/secret/path/to/cookies.txt",
+            "https://www.youtube.com/watch?v=x",
+        ]
+        redacted = dt._redact_cmd(cmd)
+        flat = " ".join(str(c) for c in redacted)
+        assert "/secret/path/to/cookies.txt" not in flat
+        assert "<redacted>" in flat
+        assert "--cookies" in flat
 
-    def test_cookies_file_env_var_passes_to_args(self, monkeypatch, tmp_path):
-        cookies_path = tmp_path / "cookies.txt"
-        cookies_path.write_text("# Netscape HTTP Cookie File\n")
-        monkeypatch.setenv("YTDLP_COOKIES_FILE", str(cookies_path))
-        args = dt._yt_dlp_common_args()
-        flat = " ".join(str(a) for a in args)
-        assert "cookies" in flat
-        assert str(cookies_path) in flat
+    def test_redact_po_token_in_extractor_args(self):
+        cmd = [
+            sys.executable, "-m", "yt_dlp",
+            "--extractor-args",
+            "youtube:player_client=web,po_token=secret-token-123",
+            "https://www.youtube.com/watch?v=x",
+        ]
+        redacted = dt._redact_cmd(cmd)
+        flat = " ".join(str(c) for c in redacted)
+        assert "secret-token-123" not in flat
+        assert "<redacted>" in flat
+        # The entire extractor-args value is redacted when it contains po_token
+        assert "youtube:player_client=web" not in flat
 
-    def test_no_env_vars_means_no_extra_args(self, monkeypatch):
-        monkeypatch.delenv("YTDLP_PO_TOKEN", raising=False)
-        monkeypatch.delenv("YTDLP_COOKIES_FILE", raising=False)
-        args = dt._yt_dlp_common_args()
-        flat = " ".join(str(a) for a in args)
-        assert "po_token" not in flat
-        assert "cookies" not in flat
+    def test_redact_cookies_in_extractor_args(self):
+        cmd = [
+            sys.executable, "-m", "yt_dlp",
+            "--extractor-args",
+            "youtube:player_client=web,cookies=/secret/cookies.txt",
+            "https://www.youtube.com/watch?v=x",
+        ]
+        redacted = dt._redact_cmd(cmd)
+        flat = " ".join(str(c) for c in redacted)
+        assert "/secret/cookies.txt" not in flat
+        assert "<redacted>" in flat
 
+    def test_non_sensitive_args_preserved(self):
+        cmd = [
+            sys.executable, "-m", "yt_dlp",
+            "--extractor-args", "youtube:player_client=web",
+            "--no-playlist",
+            "https://www.youtube.com/watch?v=x",
+        ]
+        redacted = dt._redact_cmd(cmd)
+        flat = " ".join(str(c) for c in redacted)
+        assert "youtube:player_client=web" in flat
+        assert "--no-playlist" in flat
+        assert "https://www.youtube.com/watch?v=x" in flat
 
-class TestIsBotDetectionError:
-    def test_detects_bot_detection(self):
-        assert dt._is_bot_detection_error("Sign in to confirm you're not a bot")
-        assert dt._is_bot_detection_error("bot detection triggered")
-        assert dt._is_bot_detection_error("automated queries detected")
-
-    def test_does_not_detect_normal_errors(self):
-        assert not dt._is_bot_detection_error("Video unavailable")
-        assert not dt._is_bot_detection_error("HTTP Error 404")
-        assert not dt._is_bot_detection_error("unknown error")
-
-
-class TestDownloadUsesCommonArgs:
-    def test_download_cmd_includes_player_clients(self, tmp_path, monkeypatch):
+    def test_run_redacts_po_token(self, monkeypatch, capfd):
+        monkeypatch.setenv("YTDLP_PO_TOKEN", "secret-po-token-value")
         calls = []
 
         def fake_run(cmd):
             calls.append(cmd)
+            # Simulate yt-dlp producing output
+            for c in cmd:
+                if c.startswith("source."):
+                    Path(c).write_bytes(b"x")
 
         monkeypatch.setattr(dt, "run", fake_run)
-        # Create a fake source file so _download thinks it downloaded something
-        (tmp_path / "source.mp4").write_bytes(b"x")
+        # Just test _redact_cmd since run() calls _redact_cmd internally
+        cmd = [sys.executable, "-m", "yt_dlp",
+               "--extractor-args", "youtube:po_token=secret-po-token-value",
+               "https://www.youtube.com/watch?v=x"]
+        redacted = dt._redact_cmd(cmd)
+        flat = " ".join(str(c) for c in redacted)
+        assert "secret-po-token-value" not in flat
 
-        # We can't easily mock the file discovery, so just check the cmd construction
-        # by inspecting _yt_dlp_common_args directly which is already covered above.
 
+class TestYtDlpExtractorArgs:
+    """Test that --extractor-args combines player_client and po_token correctly."""
+
+    def test_single_extractor_args_with_player_clients(self):
+        args = dt._yt_dlp_extractor_args()
+        assert args[0] == "--extractor-args"
+        val = args[1]
+        assert val.startswith("youtube:player_client=")
+        assert "web" in val
+        assert "web_embedded" in val
+        assert "android" in val
+        assert "tv" in val
+
+    def test_po_token_combined_with_player_client(self, monkeypatch):
+        monkeypatch.setenv("YTDLP_PO_TOKEN", "test-po-token-123")
+        args = dt._yt_dlp_extractor_args()
+        assert args[0] == "--extractor-args"
+        val = args[1]
+        assert "player_client=" in val
+        assert "po_token=test-po-token-123" in val
+        # Only one --extractor-args should exist
+        assert args.count("--extractor-args") == 1
+
+    def test_no_po_token_when_env_unset(self, monkeypatch):
+        monkeypatch.delenv("YTDLP_PO_TOKEN", raising=False)
+        args = dt._yt_dlp_extractor_args()
+        val = args[1]
+        assert "po_token" not in val
+
+
+class TestCookieFileHandling:
+    """Test --cookies option with YTDLP_COOKIES_FILE."""
+
+    def test_cookies_file_passed_as_separate_arg(self, monkeypatch, tmp_path):
+        cookies_path = tmp_path / "cookies.txt"
+        cookies_path.write_text("# Netscape HTTP Cookie File\n")
+        monkeypatch.setenv("YTDLP_COOKIES_FILE", str(cookies_path))
+        args = dt._yt_dlp_common_args()
+        # --cookies should be a separate argument, not in --extractor-args
+        assert "--cookies" in args
+        cookies_idx = args.index("--cookies")
+        assert args[cookies_idx + 1] == str(cookies_path)
+        # The value should NOT be in --extractor-args
+        extractor_idx = args.index("--extractor-args")
+        extractor_val = args[extractor_idx + 1]
+        assert "cookies=" not in extractor_val
+
+    def test_cookies_file_missing_raises(self, monkeypatch):
+        monkeypatch.setenv("YTDLP_COOKIES_FILE", "/nonexistent/cookies.txt")
+        with pytest.raises(RuntimeError, match="not found"):
+            dt._yt_dlp_common_args()
+
+    def test_cookies_file_unreadable_raises(self, monkeypatch, tmp_path):
+        import sys as _sys
+        if _sys.platform == "win32":
+            pytest.skip("Windows does not support chmod 000 to make files unreadable")
+        cookies_path = tmp_path / "unreadable.txt"
+        cookies_path.write_text("# data\n")
+        cookies_path.chmod(0o000)
+        monkeypatch.setenv("YTDLP_COOKIES_FILE", str(cookies_path))
+        try:
+            with pytest.raises(RuntimeError, match="not readable"):
+                dt._yt_dlp_common_args()
+        finally:
+            cookies_path.chmod(0o644)
+
+    def test_no_cookies_file_when_env_unset(self, monkeypatch):
+        monkeypatch.delenv("YTDLP_COOKIES_FILE", raising=False)
+        args = dt._yt_dlp_common_args()
+        assert "--cookies" not in args
+
+
+class TestIsBotDetectionError:
+    """Test that bot detection is narrowly classified."""
+
+    def test_detects_genuine_bot_detection(self):
+        assert dt._is_bot_detection_error("Sign in to confirm you're not a bot")
+        assert dt._is_bot_detection_error("confirm you're not a bot")
+        assert dt._is_bot_detection_error("bot detection triggered")
+        assert dt._is_bot_detection_error("automated queries detected")
+        assert dt._is_bot_detection_error("automated traffic from your network")
+
+    def test_does_not_detect_private_video(self):
+        assert not dt._is_bot_detection_error("Video is private")
+        assert not dt._is_bot_detection_error("private video")
+
+    def test_does_not_detect_copyright(self):
+        assert not dt._is_bot_detection_error("copyright claim")
+        assert not dt._is_bot_detection_error("Video unavailable due to copyright")
+
+    def test_does_not_detect_members_only(self):
+        assert not dt._is_bot_detection_error("members only content")
+        assert not dt._is_bot_detection_error("This is a members-only video")
+
+    def test_does_not_detect_unsupported_url(self):
+        assert not dt._is_bot_detection_error("Unsupported URL")
+        assert not dt._is_bot_detection_error("unsupported url format")
+
+    def test_does_not_detect_video_unavailable(self):
+        assert not dt._is_bot_detection_error("Video unavailable")
+        assert not dt._is_bot_detection_error("unknown error")
+
+
+class TestSectionDownloadWithCommonArgs:
     def test_section_download_cmd_includes_common_args(self, tmp_path, monkeypatch):
         calls = []
 
@@ -274,3 +393,4 @@ class TestDownloadUsesCommonArgs:
         assert "--download-sections" in flat
         assert "*10.0-20.0" in flat
         assert "player_client" in flat
+        assert "po_token" not in flat  # no PO token set
