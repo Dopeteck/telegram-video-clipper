@@ -12,6 +12,11 @@ vi.mock('../src/db', () => {
   class Database {
     constructor(_db?: unknown, _env?: unknown) {}
     async getUpload(id: string) { return store.uploads.get(id) ?? null; }
+    async createUpload(upload: any) {
+      const row = { id: upload.id, created_at: Date.now(), updated_at: Date.now(), ...upload };
+      store.uploads.set(row.id, row);
+      return row;
+    }
     async getJob(id: string) { return store.jobs.get(id) ?? null; }
     async createJob(job: any) {
       const row = { github_run_url: null, created_at: Date.now(), updated_at: Date.now(), ...job };
@@ -131,6 +136,37 @@ describe('REGRESSION: Mini App could never start processing', () => {
         object_key: `uploads/${ALICE}/upload_1/clip.mp4`,
       },
     });
+  });
+});
+
+describe('POST /api/youtube/import', () => {
+  it('accepts a supported YouTube URL, creates a job and dispatches the source URL', async () => {
+    const res = await asUser(ALICE, '/api/youtube/import', 'POST', {
+      url: 'https://youtu.be/abcdefghijk?t=30',
+    });
+    expect(res.status).toBe(200);
+    const json = await res.json() as any;
+    expect(json.ok).toBe(true);
+    expect(json.data.status).toBe('queued');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0];
+    const payload = JSON.parse(init.body).client_payload;
+    expect(payload.source_url).toBe('https://www.youtube.com/watch?v=abcdefghijk');
+    expect(payload.object_key).toContain('youtube-sources/1001/');
+    expect(store.uploads.get(payload.upload_id).source_url).toBe(payload.source_url);
+  });
+
+  it('rejects non-YouTube hosts and playlist-only URLs before dispatch', async () => {
+    const external = await asUser(ALICE, '/api/youtube/import', 'POST', {
+      url: 'https://youtube.com.evil.example/watch?v=abcdefghijk',
+    });
+    expect(external.status).toBe(400);
+    const playlist = await asUser(ALICE, '/api/youtube/import', 'POST', {
+      url: 'https://www.youtube.com/playlist?list=PL1234567890',
+    });
+    expect(playlist.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(store.jobs.size).toBe(0);
   });
 });
 
