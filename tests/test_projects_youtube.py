@@ -169,6 +169,64 @@ class TestProjectsYouTubePrepare:
         assert "*10.0-20.0" in flat
 
 
+    def test_youtube_prepare_falls_back_to_whisper_when_subtitles_unavailable(
+        self, tmp_path, monkeypatch, yt_info
+    ):
+        monkeypatch.setattr(
+            dt.yt_dlp, "YoutubeDL", lambda opts: FakeYoutubeDL(yt_info)
+        )
+        monkeypatch.setattr(dt, "download_subtitles", lambda *a, **k: None)
+
+        downloaded = tmp_path / "fallback-source.mp4"
+        def fake_resolve_source(url, workdir):
+            assert url == "https://www.youtube.com/watch?v=6uSskUaDL90"
+            downloaded.write_bytes(b"video")
+            return downloaded
+
+        transcribe_calls = []
+        def fake_transcribe(source, workdir, model_size, device, compute_type, language=None):
+            transcribe_calls.append(Path(source))
+            transcript = {
+                "video": str(source), "language": "en", "duration": 2914.0,
+                "model": model_size,
+                "segments": [{"start": 0.0, "end": 40.0, "text": "A fallback transcript."}],
+                "words": [{"word": "A", "start": 0.0, "end": 1.0}],
+            }
+            out = Path(workdir) / "transcript.json"
+            out.write_text(json.dumps(transcript), encoding="utf-8")
+            return out
+
+        scored = {}
+        def fake_score(path, **kwargs):
+            scored["video_path"] = kwargs.get("video_path")
+            projects.atomic_json(path / "segments.json", [
+                {"start": 10.0, "end": 35.0, "hook": "fallback", "overall": 9.0}
+            ])
+
+        monkeypatch.setattr(dt, "resolve_source", fake_resolve_source)
+        monkeypatch.setattr(dt, "transcribe", fake_transcribe)
+        monkeypatch.setattr(projects.score_clips, "run", fake_score)
+
+        options = projects.validate_options(
+            {"aspect": "9:16", "min_len": 5, "max_len": 40, "min_score": 0}
+        )
+        state = projects.create_project(
+            tmp_path, "https://www.youtube.com/watch?v=6uSskUaDL90", options
+        )
+        path = projects.project_path(tmp_path, state["id"])
+
+        result = projects.run_project(path, action="prepare")
+        saved = projects.read_project(path)
+
+        assert result["status"] == "review"
+        assert saved["yt_url"] == "https://www.youtube.com/watch?v=6uSskUaDL90"
+        assert saved["sub_path"] is None
+        assert saved["video"] == str(downloaded)
+        assert transcribe_calls == [downloaded]
+        assert scored["video_path"] == downloaded
+        assert json.loads((path / "transcript.json").read_text())["model"] == "medium"
+
+
 class TestYouTubeRenderArchitecture:
     """Verify the render stage uses remote section extraction, not full-source download."""
 
