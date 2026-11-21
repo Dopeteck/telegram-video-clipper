@@ -89,7 +89,7 @@ jobs:
           python - <<'PY'
           import base64
           import os
-                    import tempfile
+          import tempfile
 
           encoded = os.environ.get("YTDLP_COOKIES_B64", "").strip()
           if not encoded:
