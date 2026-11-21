@@ -153,10 +153,10 @@ jobs:
               print(line, flush=True)
 
           provider_loaded = re.search(
-              r"\\[youtube\\] \\[pot\\] PO Token Providers:.*bgutil:http-[\\w.-]+ \\(external\\)",
+              r"\[youtube\] \[pot\] PO Token Providers:.*bgutil:http-[\w.-]+ \(external\)",
               combined, re.IGNORECASE)
           token_requested = re.search(
-              r"\\[youtube\\] \\[pot:bgutil:http\\] Generating a \\w+ PO Token for .* via bgutil HTTP server",
+              r"\[youtube\] \[pot:bgutil:http\] Generating a \w+ PO Token for .* via bgutil HTTP server",
               combined, re.IGNORECASE)
 
           if result.returncode != 0:
