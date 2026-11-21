@@ -82,8 +82,10 @@ def run(cmd):
     stderr tail is attached to CalledProcessError for existing retry logic.
     """
     print(">", " ".join(str(c) for c in _redact_cmd(cmd)), flush=True)
-    with tempfile.TemporaryFile(mode="w+b") as stdout_file, \\
-         tempfile.TemporaryFile(mode="w+b") as stderr_file:
+    with (
+        tempfile.TemporaryFile(mode="w+b") as stdout_file,
+        tempfile.TemporaryFile(mode="w+b") as stderr_file,
+    ):
         try:
             return subprocess.run(
                 cmd, check=True, stdout=stdout_file, stderr=stderr_file, text=True
