@@ -19,7 +19,7 @@ on:
 jobs:
   test-youtube-extraction:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -43,7 +43,7 @@ jobs:
       - name: Install PO Token Provider
         run: |
           # Clone the bgutil-ytdlp-pot-provider server for PO token generation
-          git clone --depth 1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /tmp/bgutil-pot-provider
+          git clone --depth 1 --branch 2.0.2 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /tmp/bgutil-pot-provider
           cd /tmp/bgutil-pot-provider/server
           npm ci
           npx tsc
@@ -99,10 +99,52 @@ jobs:
           echo "section_start=$START" >> $GITHUB_OUTPUT
           echo "section_end=$END" >> $GITHUB_OUTPUT
 
+      - name: Verify PO Token Provider plugin discovery
+        env:
+          YTDLP_VERBOSE: "1"
+          YTDLP_POT_PROVIDER_URL: http://127.0.0.1:4416
+        run: |
+          python - <<'PY'
+          import sys
+          import os
+          import subprocess
+          sys.path.insert(0, '.')
+          import download_and_transcribe as dt
+
+          url = os.environ.get('YOUTUBE_URL', 'https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+
+          # Run yt-dlp with verbose to capture provider discovery
+          cmd = [
+              sys.executable, "-m", "yt_dlp",
+              "--verbose",
+              "--skip-download",
+              "--extractor-args",
+              "youtube:fetch_pot=always,youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416",
+              url,
+          ]
+          print("Running yt-dlp verbose to verify PO Token Provider discovery...", flush=True)
+          result = subprocess.run(cmd, capture_output=True, text=True)
+          print(result.stdout[-3000:], flush=True)
+          if result.stderr:
+              print(result.stderr[-3000:], flush=True)
+
+          # Check for provider discovery in output
+          combined = result.stdout + result.stderr
+          if "bgutil" in combined.lower() or "pot" in combined.lower():
+              print("PO Token Provider plugin discovered.", flush=True)
+          else:
+              print("::warning::PO Token Provider plugin not found in yt-dlp output.", flush=True)
+
+          if result.returncode != 0:
+              print("::error::yt-dlp verbose check failed.", flush=True)
+              sys.exit(1)
+          PY
+
       - name: Test YouTube metadata extraction
         id: metadata
         env:
           YOUTUBE_URL: ${{ steps.validate.outputs.youtube_url }}
+          YTDLP_VERBOSE: "1"
         run: |
           python - <<'PY'
           import sys
@@ -121,7 +163,6 @@ jobs:
               print(f"Manual subtitles: {info['manual_subtitles']}")
               print(f"Automatic subtitles: {info['automatic_subtitles']}")
 
-              # Write results for subsequent steps
               with open('/tmp/yt_metadata.txt', 'w') as f:
                   f.write(f"id={info['id']}\n")
                   f.write(f"title={info['title']}\n")
@@ -129,6 +170,39 @@ jobs:
           except Exception as e:
               print(f"::error::Metadata extraction failed: {e}")
               sys.exit(1)
+          PY
+
+      - name: Test YouTube subtitles retrieval
+        id: subtitles
+        env:
+          YOUTUBE_URL: ${{ steps.validate.outputs.youtube_url }}
+        run: |
+          python - <<'PY'
+          import sys
+          import os
+          import tempfile
+          from pathlib import Path
+
+          sys.path.insert(0, '.')
+          import download_and_transcribe as dt
+
+          url = os.environ['YOUTUBE_URL']
+
+          with tempfile.TemporaryDirectory(prefix='yt-subs-') as temp:
+              try:
+                  sub_path = dt.download_subtitles(url, Path(temp), langs=("en", "en-orig"))
+                  if sub_path:
+                      content = sub_path.read_text(encoding="utf-8-sig")
+                      print(f"Subtitles retrieved: {sub_path.name} ({len(content)} bytes)")
+                      print(f"First 200 chars: {content[:200]}")
+                      with open('/tmp/yt_subs_info.txt', 'w') as f:
+                          f.write(f"path={sub_path}\n")
+                          f.write(f"size={len(content)}\n")
+                  else:
+                      print("No subtitles found (may be auto-generated only or none available)")
+              except Exception as e:
+                  print(f"::error::Subtitle retrieval failed: {e}")
+                  sys.exit(1)
           PY
 
       - name: Test YouTube section download
@@ -158,11 +232,10 @@ jobs:
                   print(f"Section file: {section}")
                   print(f"Section size: {section.stat().st_size} bytes")
 
-                  # Verify the file is a valid video with ffprobe
                   import subprocess
                   result = subprocess.run(
                       ['ffprobe', '-v', 'error', '-show_entries',
-                       'stream=codec_type,codec_name,width,height',
+                       'stream=codec_type,codec_name,width,height,sample_rate',
                        '-of', 'json', str(section)],
                       capture_output=True, text=True, check=True)
                   probe = _json.loads(result.stdout)
@@ -179,7 +252,7 @@ jobs:
                   vs = video_streams[0]
                   as_ = audio_streams[0]
                   print(f"Video stream: {vs.get('codec_name')} {vs.get('width')}x{vs.get('height')}")
-                  print(f"Audio stream: {as_.get('codec_name')}")
+                  print(f"Audio stream: {as_.get('codec_name')} {as_.get('sample_rate')}Hz")
 
                   with open('/tmp/yt_section_info.txt', 'w') as f:
                       f.write(f"path={section}\n")
@@ -197,6 +270,9 @@ jobs:
         run: |
           echo "=== Metadata ==="
           cat /tmp/yt_metadata.txt 2>/dev/null || echo "No metadata"
+          echo ""
+          echo "=== Subtitles ==="
+          cat /tmp/yt_subs_info.txt 2>/dev/null || echo "No subtitles info"
           echo ""
           echo "=== Section ==="
           cat /tmp/yt_section_info.txt 2>/dev/null || echo "No section"

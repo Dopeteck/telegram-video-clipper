@@ -344,7 +344,8 @@ class TestRedactedLogging:
         redacted = dt._redact_cmd(cmd)
         flat = " ".join(str(c) for c in redacted)
         assert "secret-token-123" not in flat
-        assert "<redacted>" in flat
+        assert "youtube:player_client=web" in flat
+        assert "po_token=<redacted>" in flat
 
     def test_non_sensitive_args_preserved(self):
         cmd = [
@@ -359,17 +360,20 @@ class TestRedactedLogging:
         assert "--no-playlist" in flat
         assert "https://www.youtube.com/watch?v=x" in flat
 
-    def test_redact_web_gvs_token(self):
+    def test_redact_web_gvs_token_preserves_other_args(self):
         cmd = [
             sys.executable, "-m", "yt_dlp",
             "--extractor-args",
-            "youtube:po_token=web.gvs+secret-token-value",
+            "youtube:player_client=web,fetch_pot=always,po_token=web.gvs+secret-token-value,youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416",
             "https://www.youtube.com/watch?v=x",
         ]
         redacted = dt._redact_cmd(cmd)
         flat = " ".join(str(c) for c in redacted)
+        assert "youtube:player_client=web" in flat
+        assert "fetch_pot=always" in flat
+        assert "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416" in flat
         assert "secret-token-value" not in flat
-        assert "<redacted>" in flat
+        assert "po_token=<redacted>" in flat
 
 
 class TestYtDlpExtractorArgs:
@@ -404,8 +408,30 @@ class TestYtDlpExtractorArgs:
         pot_val = args[args.index("--extractor-args") + 1]
         assert "fetch_pot=always" in pot_val
 
+    def test_common_args_includes_verbose(self, monkeypatch):
+        monkeypatch.setenv("YTDLP_VERBOSE", "1")
+        args = dt._yt_dlp_common_args()
+        assert "--verbose" in args
 
-class TestCookieFileHandling:
+    def test_ydl_opts_includes_verbose(self, monkeypatch):
+        monkeypatch.setenv("YTDLP_VERBOSE", "true")
+        opts = dt._yt_dlp_ydl_opts()
+        assert opts.get("verbose") is True
+
+
+class TestMissingConfiguration:
+    """Test behavior when optional configuration is missing."""
+
+    def test_no_pot_url_uses_default(self, monkeypatch):
+        monkeypatch.delenv("YTDLP_POT_PROVIDER_URL", raising=False)
+        opts = dt._yt_dlp_ydl_opts()
+        pot_http = opts["extractor_args"]["youtubepot-bgutilhttp"]
+        assert pot_http["base_url"] == ["http://127.0.0.1:4416"]
+
+    def test_no_cookie_file_does_not_add_cookies_arg(self, monkeypatch):
+        monkeypatch.delenv("YTDLP_COOKIES_FILE", raising=False)
+        args = dt._yt_dlp_common_args()
+        assert "--cookies" not in args
     """Test --cookies option with YTDLP_COOKIES_FILE."""
 
     def test_cookies_file_passed_as_separate_arg(self, monkeypatch, tmp_path):

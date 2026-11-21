@@ -69,7 +69,7 @@ jobs:
       - name: Install PO Token Provider
         run: |
           # Clone the bgutil-ytdlp-pot-provider server for PO token generation
-          git clone --depth 1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /tmp/bgutil-pot-provider
+          git clone --depth 1 --branch 2.0.2 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /tmp/bgutil-pot-provider
           cd /tmp/bgutil-pot-provider/server
           npm ci
           npx tsc

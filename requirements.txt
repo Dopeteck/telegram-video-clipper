@@ -1,6 +1,6 @@
 # Viral clip pipeline - fully local, no paid APIs
-yt-dlp
+yt-dlp>=2025.05.22
 faster-whisper
 opencv-python
-bgutil-ytdlp-pot-provider>=2.0.0
+bgutil-ytdlp-pot-provider==2.0.2
 # Captions are burnt in via ffmpeg's ASS engine (no extra package needed).

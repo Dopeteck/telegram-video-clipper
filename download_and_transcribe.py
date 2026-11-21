@@ -73,7 +73,8 @@ def _redact_cmd(cmd):
 
     Redacts:
         - --cookies <path> -> --cookies <redacted>
-        - --extractor-args containing po_token -> <redacted> value
+        - --extractor-args: redacts only po_token value, keeps fetch_pot and
+          youtubepot-bgutilhttp:base_url visible for diagnostics.
     """
     redacted = []
     i = 0
@@ -88,11 +89,7 @@ def _redact_cmd(cmd):
         elif c == "--extractor-args":
             redacted.append(c)
             if i + 1 < len(cmd):
-                val = cmd[i + 1]
-                if "po_token" in val:
-                    redacted.append("<redacted>")
-                else:
-                    redacted.append(val)
+                redacted.append(_redact_sensitive_text(cmd[i + 1]))
                 i += 2
                 continue
         redacted.append(c)
@@ -155,6 +152,17 @@ def _yt_dlp_pot_args():
     return "--extractor-args", ",".join(parts)
 
 
+def _yt_dlp_verbose_args():
+    """Return verbose flag if diagnostics are requested.
+
+    Enabled via YTDLP_VERBOSE=1 environment variable. Logs provider plugin
+    discovery and token generation without exposing credentials.
+    """
+    if os.environ.get("YTDLP_VERBOSE", "").strip().lower() in {"1", "true", "yes"}:
+        return ["--verbose"]
+    return []
+
+
 def _yt_dlp_ydl_opts():
     """Build yt-dlp Python API options dict for consistent configuration.
 
@@ -163,9 +171,6 @@ def _yt_dlp_ydl_opts():
     yt_dlp.YoutubeDL(opts).
     """
     opts = {"quiet": True, "no_warnings": True}
-    pot_arg, pot_val = _yt_dlp_pot_args()
-    # yt-dlp Python API expects extractor_args as a dict:
-    # {"youtube": {"fetch_pot": ["always"], "youtubepot-bgutilhttp": {...}}}
     ea = opts.setdefault("extractor_args", {})
     ea.setdefault("youtube", {})["fetch_pot"] = ["always"]
     pot_url = os.environ.get("YTDLP_POT_PROVIDER_URL", _YT_POT_PROVIDER_URL)
@@ -173,6 +178,8 @@ def _yt_dlp_ydl_opts():
     pot_home = os.environ.get("YTDLP_POT_PROVIDER_HOME", "").strip()
     if pot_home:
         ea.setdefault("youtubepot-bgutilscript", {})["server_home"] = [pot_home]
+    if os.environ.get("YTDLP_VERBOSE", "").strip().lower() in {"1", "true", "yes"}:
+        opts["verbose"] = True
     return opts
 
 
@@ -183,6 +190,7 @@ def _yt_dlp_common_args():
     """
     pot_arg, pot_val = _yt_dlp_pot_args()
     args = [pot_arg, pot_val]
+    args.extend(_yt_dlp_verbose_args())
     cookies_file = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
     if cookies_file:
         cookies_path = Path(cookies_file)
