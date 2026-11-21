@@ -1,6 +1,13 @@
 name: Test YouTube Extraction
 
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'download_and_transcribe.py'
+      - 'requirements.txt'
+      - '.github/workflows/test-youtube-extraction.yml'
+      - '.github/workflows/process-video.yml'
   workflow_dispatch:
     inputs:
       youtube_url:
@@ -27,7 +34,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Require the PR branch (never validate main by accident)
+      - name: Require the PR branch for manual runs
+        if: github.event_name == 'workflow_dispatch'
         env:
           REF_NAME: ${{ github.ref_name }}
           COMMIT_SHA: ${{ github.sha }}
@@ -39,16 +47,19 @@ jobs:
             exit 1
           fi
 
-      - name: Checkout selected branch and commit
+      - name: Checkout the exact PR head (or selected manual-run ref)
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Verify checked-out revision
         env:
-          EVENT_SHA: ${{ github.sha }}
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           ACTUAL_SHA="$(git rev-parse HEAD)"
+          echo "Expected source commit: $EXPECTED_SHA"
           echo "Checked out: $ACTUAL_SHA"
-          test "$ACTUAL_SHA" = "$EVENT_SHA"
+          test "$ACTUAL_SHA" = "$EXPECTED_SHA"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -117,14 +128,16 @@ jobs:
           print(f"Validated YouTube URL; section {a:g}-{b:g}s")
           PY
 
-      - name: Verify yt-dlp JavaScript challenge support
+      - name: Verify yt-dlp JavaScript challenge support and format availability
+        env:
+          YOUTUBE_URL: ${{ steps.validate.outputs.url }}
         run: |
-          python -m yt_dlp --verbose --list-formats "https://www.youtube.com/watch?v=XtF6m2J0y1g" 2>&1 | tee /tmp/yt-dlp-formats.log
+          set -o pipefail
+          python -m yt_dlp --verbose --list-formats "$YOUTUBE_URL" 2>&1 | tee /tmp/yt-dlp-formats.log
           if grep -qi "No supported JavaScript runtime could be found" /tmp/yt-dlp-formats.log; then
             echo "::error::yt-dlp did not detect the configured JavaScript runtime"
             exit 1
           fi
-        continue-on-error: false
 
       - name: Test YouTube metadata extraction
         env:
