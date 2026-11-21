@@ -7,12 +7,24 @@ scoring, and selected timestamp ranges are cut out with yt-dlp section
 downloading (or an ffmpeg local-cut fallback) so the complete source file is
 never transferred unnecessarily.
 
+YouTube extraction uses the bgutil-ytdlp-pot-provider plugin for automatic
+Proof-of-Origin (PO) token generation. The provider must be running (HTTP
+server on http://127.0.0.1:4416 by default) or available as a script for
+yt-dlp to fetch PO tokens. Configure via:
+
+    YTDLP_POT_PROVIDER_HOME   Path to the bgutil-ytdlp-pot-provider server
+                              directory (for the script provider option).
+    YTDLP_COOKIES_FILE        Optional path to a Netscape-format cookies file
+                              (additional authentication mechanism).
+
 No external/paid APIs. CPU-friendly (int8). Usage:
     python download_and_transcribe.py <youtube_url> --model small
 """
 import hashlib
 import json
 import argparse
+import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -25,16 +37,188 @@ import yt_dlp
 from yt_dlp.utils import DownloadError
 
 
-def run(cmd):
-    print(">", " ".join(str(c) for c in cmd), flush=True)
-    subprocess.run(cmd, check=True)
-
-
-# ------------------------------------------------------------------ sources
+# ------------------------------------------------------------------ constants
 
 YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com",
                  "youtube-nocookie.com", "youtu.be"}
 
+# Player clients tried in order; web_embedded and tv are often less
+# aggressively rate-limited than the main web client on datacenter IPs.
+_YT_PLAYER_CLIENTS = "web,web_embedded,android,tv"
+
+# PO Token context for GVS (Google Video Server) requests. Per yt-dlp docs,
+# PO Tokens use format CLIENT.CONTEXT+TOKEN (e.g. web.gvs+XXXXXXXXXXXX).
+_YT_PO_TOKEN_CONTEXT = "web.gvs"
+
+# Default URL for the bgutil-ytdlp-pot-provider HTTP server.
+_YT_POT_PROVIDER_URL = "http://127.0.0.1:4416"
+
+
+# ------------------------------------------------------------------ helpers
+
+def _redact_sensitive_text(text):
+    """Redact PO tokens and configured cookie paths from diagnostic text."""
+    text = re.sub(r'po_token=[^\s,;]+', 'po_token=<redacted>', text,
+                  flags=re.IGNORECASE)
+    text = re.sub(r'(web\.gvs\+)[^\s,;]+', r'\1<redacted>', text,
+                  flags=re.IGNORECASE)
+    cookie_path = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
+    if cookie_path:
+        text = text.replace(cookie_path, "<redacted-cookie-path>")
+    return text
+
+
+def _redact_cmd(cmd):
+    """Return a copy of cmd with sensitive arguments redacted for logging.
+
+    Redacts:
+        - --cookies <path> -> --cookies <redacted>
+        - --extractor-args containing po_token -> <redacted> value
+    """
+    redacted = []
+    i = 0
+    while i < len(cmd):
+        c = cmd[i]
+        if c == "--cookies":
+            redacted.append(c)
+            if i + 1 < len(cmd):
+                redacted.append("<redacted>")
+                i += 2
+                continue
+        elif c == "--extractor-args":
+            redacted.append(c)
+            if i + 1 < len(cmd):
+                val = cmd[i + 1]
+                if "po_token" in val:
+                    redacted.append("<redacted>")
+                else:
+                    redacted.append(val)
+                i += 2
+                continue
+        redacted.append(c)
+        i += 1
+    return redacted
+
+
+def run(cmd):
+    """Run a command, logging redacted args and capturing output.
+
+    On failure, prints a sanitized stderr tail for diagnostics without
+    exposing credentials.
+    """
+    print(">", " ".join(str(c) for c in _redact_cmd(cmd)), flush=True)
+    with (
+        tempfile.TemporaryFile(mode="w+b") as stdout_file,
+        tempfile.TemporaryFile(mode="w+b") as stderr_file,
+    ):
+        try:
+            return subprocess.run(
+                cmd, check=True, stdout=stdout_file, stderr=stderr_file,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            stderr_file.flush()
+            stderr_file.seek(0, os.SEEK_END)
+            end = stderr_file.tell()
+            stderr_file.seek(max(0, end - 16384))
+            raw_tail = stderr_file.read().decode("utf-8", errors="replace") \
+                or (exc.stderr or "")
+            lines = raw_tail.strip().splitlines()[-5:] if raw_tail.strip() else []
+            safe_lines = [_redact_sensitive_text(line) for line in lines]
+            exc.stderr = "\n".join(safe_lines)
+            if safe_lines:
+                print("ERROR stderr tail:", flush=True)
+                for line in safe_lines:
+                    print(f"  {line}", flush=True)
+            raise
+
+
+# ------------------------------------------------------------------ yt-dlp config
+
+def _yt_dlp_pot_args():
+    """Return extractor-args for the bgutil-ytdlp-pot-provider.
+
+    Configures:
+        - youtube:fetch_pot=always  (always request a PO token)
+        - youtubepot-bgutilhttp:base_url=<provider URL> (HTTP server option)
+        - youtubepot-bgutilscript:server_home=<path> (script option, fallback)
+
+    The provider plugin auto-discovers the HTTP server at the default URL.
+    If that's unreachable, fall back to the script provider.
+    """
+    parts = ["fetch_pot=always"]
+    pot_url = os.environ.get("YTDLP_POT_PROVIDER_URL", _YT_POT_PROVIDER_URL)
+    parts.append(f"youtubepot-bgutilhttp:base_url={pot_url}")
+    pot_home = os.environ.get("YTDLP_POT_PROVIDER_HOME", "").strip()
+    if pot_home:
+        parts.append(f"youtubepot-bgutilscript:server_home={pot_home}")
+    return "--extractor-args", ",".join(parts)
+
+
+def _yt_dlp_ydl_opts():
+    """Build yt-dlp Python API options dict for consistent configuration.
+
+    Applies to all call sites: metadata inspection, full download,
+    section download, subtitle download. Returns a dict suitable for
+    yt_dlp.YoutubeDL(opts).
+    """
+    opts = {"quiet": True, "no_warnings": True}
+    pot_arg, pot_val = _yt_dlp_pot_args()
+    # yt-dlp Python API expects extractor_args as a dict:
+    # {"youtube": {"fetch_pot": ["always"], "youtubepot-bgutilhttp": {...}}}
+    ea = opts.setdefault("extractor_args", {})
+    ea.setdefault("youtube", {})["fetch_pot"] = ["always"]
+    pot_url = os.environ.get("YTDLP_POT_PROVIDER_URL", _YT_POT_PROVIDER_URL)
+    ea.setdefault("youtubepot-bgutilhttp", {})["base_url"] = [pot_url]
+    pot_home = os.environ.get("YTDLP_POT_PROVIDER_HOME", "").strip()
+    if pot_home:
+        ea.setdefault("youtubepot-bgutilscript", {})["server_home"] = [pot_home]
+    return opts
+
+
+def _yt_dlp_common_args():
+    """Common yt-dlp CLI args for all YouTube CLI invocations.
+
+    Applies to: _download(), download_subtitles(), _yt_dlp_section().
+    """
+    pot_arg, pot_val = _yt_dlp_pot_args()
+    args = [pot_arg, pot_val]
+    cookies_file = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
+    if cookies_file:
+        cookies_path = Path(cookies_file)
+        if not cookies_path.is_file():
+            raise RuntimeError(f"YTDLP_COOKIES_FILE not found: {cookies_file}")
+        if not os.access(cookies_path, os.R_OK):
+            raise RuntimeError(f"YTDLP_COOKIES_FILE not readable: {cookies_file}")
+        args.extend(["--cookies", str(cookies_path)])
+    return args
+
+
+def _is_http_403(message):
+    """Check if an error message indicates HTTP 403 Forbidden."""
+    msg = message.lower()
+    return "http error 403" in msg or "403: forbidden" in msg
+
+
+def _is_bot_detection_error(message):
+    """Check if an error message indicates YouTube bot detection.
+
+    Narrowly scoped to actual YouTube bot/authentication restriction messages.
+    Does NOT classify generic errors (private, copyright, members only,
+    unsupported URL) as bot detection.
+    """
+    msg = message.lower()
+    indicators = [
+        "sign in to confirm you're not a bot",
+        "confirm you're not a bot",
+        "bot detection",
+        "automated queries",
+        "automated traffic",
+    ]
+    return any(ind in msg for ind in indicators)
+
+
+# ------------------------------------------------------------------ sources
 
 def is_network_source(source):
     return urlparse(str(source)).scheme in {"http", "https"}
@@ -57,27 +241,68 @@ def normalize_url(url):
                        query, parts.fragment))
 
 
+# ---------------------------------------------------------------- downloads
+
 def _download(url, workdir, fmt="bestvideo*+bestaudio/best"):
+    """Download a URL with yt-dlp.
+
+    On YouTube, if separate video+audio formats return HTTP 403, retry with a
+    single progressive stream (video+audio together), capped at 720p.
+    """
     out_tmpl = workdir / "source.%(ext)s"
-    cmd = [
-        sys.executable, "-m", "yt_dlp",
-        "-f", fmt,
-        "--merge-output-format", "mp4",
-        "--no-playlist",
-        "-o", str(out_tmpl),
-        url,
-    ]
+    formats = [fmt]
+    if is_youtube_url(url) and "bestvideo" in fmt:
+        formats.append("best[height<=720]/best[height<=480]/best")
+
     last_error = None
-    for attempt in range(1, 4):
-        try:
-            run(cmd)
+    downloaded = False
+    for format_index, selected_fmt in enumerate(formats):
+        cmd = [
+            sys.executable, "-m", "yt_dlp",
+            "-f", selected_fmt,
+            "--merge-output-format", "mp4",
+            "--no-playlist",
+            "-o", str(out_tmpl),
+        ]
+        cmd.extend(_yt_dlp_common_args())
+        cmd.append(url)
+
+        for attempt in range(1, 4):
+            try:
+                run(cmd)
+                downloaded = True
+                break
+            except subprocess.CalledProcessError as exc:  # rate limits / 4xx blips
+                last_error = exc
+                stderr = getattr(exc, "stderr", "") or ""
+                if _is_http_403(stderr) and format_index + 1 < len(formats):
+                    print(
+                        "YouTube returned HTTP 403 for separate video/audio "
+                        "formats; retrying with a single progressive stream "
+                        "(up to 720p).", flush=True)
+                    break
+                if attempt < 3:
+                    time.sleep(min(2 ** attempt, 20))
+        if downloaded:
             break
-        except subprocess.CalledProcessError as exc:  # rate limits / 4xx blips
-            last_error = exc
-            if attempt < 3:
-                time.sleep(min(2 ** attempt, 20))
-    else:
+
+    if not downloaded:
+        stderr = getattr(last_error, "stderr", "") or ""
+        if _is_bot_detection_error(stderr):
+            raise RuntimeError(
+                "YouTube blocked extraction (bot detection). On GitHub Actions, "
+                "start the bgutil-ytdlp-pot-provider HTTP server and set "
+                "YTDLP_POT_PROVIDER_URL, or configure YTDLP_COOKIES_FILE. "
+                "Original error: " + stderr[:200]) from last_error
+        if _is_http_403(stderr):
+            raise RuntimeError(
+                "YouTube denied the video stream with HTTP 403 after retrying "
+                "with a single progressive format. Start the "
+                "bgutil-ytdlp-pot-provider HTTP server and set "
+                "YTDLP_POT_PROVIDER_URL, or configure YTDLP_COOKIES_FILE. "
+                "Original error: " + stderr[:200]) from last_error
         raise last_error
+
     vids = [p for p in sorted(workdir.glob("source.*"))
             if p.suffix.lower() in (".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi")]
     if not vids:
@@ -125,13 +350,20 @@ def inspect_source(url):
     """YouTube metadata without downloading video: id, title, duration,
     available subtitle languages. Raises RuntimeError on lookup failure."""
     url = normalize_url(url)
-    ydl_opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+    ydl_opts = _yt_dlp_ydl_opts()
+    ydl_opts["skip_download"] = True
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
     except DownloadError as exc:
-        raise RuntimeError(
-            f"YouTube lookup failed for {url}: {exc}") from exc
+        msg = str(exc)
+        if _is_bot_detection_error(msg):
+            raise RuntimeError(
+                "YouTube blocked metadata extraction (bot detection). On GitHub "
+                "Actions, start the bgutil-ytdlp-pot-provider HTTP server and "
+                "set YTDLP_POT_PROVIDER_URL, or configure YTDLP_COOKIES_FILE. "
+                "Original error: " + msg[:200]) from exc
+        raise RuntimeError(f"YouTube lookup failed for {url}: {exc}") from exc
     except Exception as exc:  # network / rate limit / expired URL
         raise RuntimeError(f"YouTube lookup failed for {url}: {exc}") from exc
     subs = info.get("subtitles") or {}
@@ -161,8 +393,9 @@ def download_subtitles(url, workdir, langs=("en", "en-orig")):
             "--sub-langs", ",".join(langs),
             "--no-playlist",
             "-o", out_tmpl,
-            url,
         ]
+        cmd.extend(_yt_dlp_common_args())
+        cmd.append(url)
         try:
             run(cmd)
         except subprocess.CalledProcessError:
@@ -279,6 +512,20 @@ def download_section(url, start, end, workdir, source=None, retries=3):
             return out.resolve()
         except Exception as exc:  # noqa: BLE001 - surface last error after retries
             last_error = exc
+            stderr = getattr(exc, "stderr", "") or ""
+            if _is_bot_detection_error(stderr):
+                raise RuntimeError(
+                    "YouTube blocked section extraction (bot detection). On "
+                    "GitHub Actions, start the bgutil-ytdlp-pot-provider HTTP "
+                    "server and set YTDLP_POT_PROVIDER_URL, or configure "
+                    "YTDLP_COOKIES_FILE. Original error: " + stderr[:200]) from exc
+            if _is_http_403(stderr):
+                raise RuntimeError(
+                    "YouTube denied section extraction with HTTP 403 after "
+                    "retrying with a single progressive format. Start the "
+                    "bgutil-ytdlp-pot-provider HTTP server and set "
+                    "YTDLP_POT_PROVIDER_URL, or configure YTDLP_COOKIES_FILE. "
+                    "Original error: " + stderr[:200]) from exc
             for tmpf in (out, partial):
                 try:
                     tmpf.unlink()
@@ -304,8 +551,9 @@ def _yt_dlp_section(url, start, end, workdir, key):
         "--no-playlist",
         "--download-sections", f"*{start}-{end}",
         "-o", str(out_tmpl),
-        url,
     ]
+    cmd.extend(_yt_dlp_common_args())
+    cmd.append(url)
     run(cmd)
 
 
