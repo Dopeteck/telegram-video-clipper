@@ -198,7 +198,7 @@ jobs:
           if cookies_b64:
               try:
                   cookie_bytes = base64.b64decode(cookies_b64, validate=True)
-                  if b'\\t' not in cookie_bytes[:4096]:
+                  if b'\t' not in cookie_bytes[:4096]:
                       raise ValueError('invalid Netscape cookie format')
                   fd, cookie_path = tempfile.mkstemp(prefix='yt-cookies-', suffix='.txt')
                   os.chmod(cookie_path, 0o600)
