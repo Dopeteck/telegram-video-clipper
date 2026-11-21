@@ -196,6 +196,10 @@ def _yt_dlp_common_args():
     # YouTube requires a JavaScript runtime for some extraction paths;
     # deno is the default but may not be available. Explicitly request it.
     args.extend(["--js-runtimes", "deno"])
+    # YouTube EJS challenge solver components must be loaded remotely;
+    # without them, signature solving fails and media download returns
+    # "Requested format is not available".
+    args.extend(["--remote-components", "ejs:github"])
     cookies_file = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
     if cookies_file:
         cookies_path = Path(cookies_file)
