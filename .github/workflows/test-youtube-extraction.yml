@@ -108,9 +108,9 @@ jobs:
           import os, re, sys
           from urllib.parse import urlparse, parse_qs
 
-          url = os.environ.get("INPUT_YOUTUBE_URL", "").strip()
-          start = os.environ.get("INPUT_SECTION_START", "10").strip()
-          end = os.environ.get("INPUT_SECTION_END", "16").strip()
+          url = os.environ.get("INPUT_YOUTUBE_URL", "").strip() or "https://www.youtube.com/watch?v=XtF6m2J0y1g"
+          start = os.environ.get("INPUT_SECTION_START", "").strip() or "10"
+          end = os.environ.get("INPUT_SECTION_END", "").strip() or "16"
 
           parsed = urlparse(url)
           host = (parsed.hostname or "").lower()
