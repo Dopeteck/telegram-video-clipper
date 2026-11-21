@@ -39,6 +39,7 @@ jobs:
         run: |
           curl -fsSL https://deno.land/x/install/install.sh | DENO_INSTALL=/tmp/deno_install sh
           echo "/tmp/deno_install/bin" >> $GITHUB_PATH
+          export PATH="/tmp/deno_install/bin:$PATH"
           deno --version
 
       - name: Install Python dependencies
