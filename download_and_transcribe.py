@@ -82,8 +82,8 @@ def run(cmd):
     stderr tail is attached to CalledProcessError for existing retry logic.
     """
     print(">", " ".join(str(c) for c in _redact_cmd(cmd)), flush=True)
-    with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stdout_file, \\
-         tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stderr_file:
+    with tempfile.TemporaryFile(mode="w+b") as stdout_file, \\
+         tempfile.TemporaryFile(mode="w+b") as stderr_file:
         try:
             return subprocess.run(
                 cmd, check=True, stdout=stdout_file, stderr=stderr_file, text=True
@@ -107,8 +107,8 @@ def run(cmd):
 def _redact_sensitive_text(text):
     """Redact PO tokens and configured cookie paths from diagnostic text."""
     import re
-    text = re.sub(r'po_token=[^\\s,;]+', 'po_token=<redacted>', text, flags=re.IGNORECASE)
-    text = re.sub(r'(web\\.gvs\\+)[^\\s,;]+', r'\\1<redacted>', text, flags=re.IGNORECASE)
+    text = re.sub(r'po_token=[^\s,;]+', 'po_token=<redacted>', text, flags=re.IGNORECASE)
+    text = re.sub(r'(web\.gvs\+)[^\s,;]+', r'\1<redacted>', text, flags=re.IGNORECASE)
     cookie_path = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
     if cookie_path:
         text = text.replace(cookie_path, "<redacted-cookie-path>")
