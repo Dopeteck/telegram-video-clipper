@@ -7,22 +7,48 @@ on:
         description: 'YouTube URL to test extraction against'
         required: false
         default: 'https://www.youtube.com/watch?v=XtF6m2J0y1g'
+        type: string
       section_start:
         description: 'Start time for section download test (seconds)'
         required: false
         default: '10'
+        type: string
       section_end:
         description: 'End time for section download test (seconds)'
         required: false
         default: '16'
+        type: string
+
+permissions:
+  contents: read
 
 jobs:
   test-youtube-extraction:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
-      - name: Checkout repository
+      - name: Require the PR branch (never validate main by accident)
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          echo "Validation branch: $REF_NAME"
+          echo "Validation commit: $COMMIT_SHA"
+          if [ "$REF_NAME" != "fix/youtube-bot-detection" ]; then
+            echo "::error::Run this workflow using the fix/youtube-bot-detection branch selector, not main."
+            exit 1
+          fi
+
+      - name: Checkout selected branch and commit
         uses: actions/checkout@v4
+
+      - name: Verify checked-out revision
+        env:
+          EVENT_SHA: ${{ github.sha }}
+        run: |
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          echo "Checked out: $ACTUAL_SHA"
+          test "$ACTUAL_SHA" = "$EVENT_SHA"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -30,139 +56,120 @@ jobs:
           python-version: "3.11"
           cache: pip
 
+      - name: Set up Deno JavaScript runtime
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-liberation fonts-noto-cjk
+          sudo apt-get install -y ffmpeg
 
-      - name: Install Python dependencies
+      - name: Install Python dependencies including yt-dlp EJS
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          python -m pip install --upgrade "yt-dlp[default]"
+          python -m yt_dlp --version
+          deno --version
+          python - <<'PY'
+          import importlib.metadata as m
+          print("yt-dlp:", m.version("yt-dlp"))
+          print("yt-dlp-ejs:", m.version("yt-dlp-ejs"))
+          PY
 
-      - name: Validate inputs
+      - name: Validate dispatch inputs
         id: validate
+        env:
+          INPUT_YOUTUBE_URL: ${{ inputs.youtube_url }}
+          INPUT_SECTION_START: ${{ inputs.section_start }}
+          INPUT_SECTION_END: ${{ inputs.section_end }}
         run: |
-          URL="${{ github.event.inputs.youtube_url || 'https://www.youtube.com/watch?v=XtF6m2J0y1g' }}"
-          START="${{ github.event.inputs.section_start || '10' }}"
-          END="${{ github.event.inputs.section_end || '16' }}"
+          python - <<'PY'
+          import os, re, sys
+          from urllib.parse import urlparse, parse_qs
 
-          # Validate YouTube URL
-          if ! echo "$URL" | grep -qE '^https?://(www\.)?(youtube\.com/watch\?v=|youtu\.be/)'; then
-            echo "::error::Invalid YouTube URL: $URL"
+          url = os.environ.get("INPUT_YOUTUBE_URL", "").strip()
+          start = os.environ.get("INPUT_SECTION_START", "10").strip()
+          end = os.environ.get("INPUT_SECTION_END", "16").strip()
+
+          parsed = urlparse(url)
+          host = (parsed.hostname or "").lower()
+          valid_host = host in {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
+          valid_video = (
+              (host == "youtu.be" and bool(parsed.path.strip("/"))) or
+              (host != "youtu.be" and bool(parse_qs(parsed.query).get("v", [""])[0]))
+          )
+          if parsed.scheme != "https" or not valid_host or not valid_video or any(c in url for c in "\r\n"):
+              print("::error::Invalid YouTube URL input")
+              sys.exit(1)
+          if not re.fullmatch(r"\d+(?:\.\d+)?", start) or not re.fullmatch(r"\d+(?:\.\d+)?", end):
+              print("::error::Section bounds must be non-negative numbers")
+              sys.exit(1)
+          a, b = float(start), float(end)
+          if b <= a or b - a > 120:
+              print("::error::Section end must be after start and test sections may not exceed 120 seconds")
+              sys.exit(1)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"url={url}\nstart={a}\nend={b}\n")
+          print(f"Validated YouTube URL; section {a:g}-{b:g}s")
+          PY
+
+      - name: Verify yt-dlp JavaScript challenge support
+        run: |
+          python -m yt_dlp --verbose --list-formats "https://www.youtube.com/watch?v=XtF6m2J0y1g" 2>&1 | tee /tmp/yt-dlp-formats.log
+          if grep -qi "No supported JavaScript runtime could be found" /tmp/yt-dlp-formats.log; then
+            echo "::error::yt-dlp did not detect the configured JavaScript runtime"
             exit 1
           fi
-
-          # Validate section times are integers
-          if ! echo "$START" | grep -qE '^[0-9]+$'; then
-            echo "::error::section_start must be a non-negative integer: $START"
-            exit 1
-          fi
-          if ! echo "$END" | grep -qE '^[0-9]+$'; then
-            echo "::error::section_end must be a non-negative integer: $END"
-            exit 1
-          fi
-
-          # Validate start < end
-          if [ "$START" -ge "$END" ]; then
-            echo "::error::section_start ($START) must be less than section_end ($END)"
-            exit 1
-          fi
-
-          echo "youtube_url=$URL" >> $GITHUB_OUTPUT
-          echo "section_start=$START" >> $GITHUB_OUTPUT
-          echo "section_end=$END" >> $GITHUB_OUTPUT
+        continue-on-error: false
 
       - name: Test YouTube metadata extraction
-        id: metadata
         env:
-          YOUTUBE_URL: ${{ steps.validate.outputs.youtube_url }}
+          YOUTUBE_URL: ${{ steps.validate.outputs.url }}
         run: |
           python - <<'PY'
-          import sys
           import os
-          sys.path.insert(0, '.')
           import download_and_transcribe as dt
-
-          url = os.environ['YOUTUBE_URL']
-
-          try:
-              info = dt.inspect_source(url)
-              print(f"Video ID: {info['id']}")
-              print(f"Title: {info['title']}")
-              print(f"Duration: {info['duration']}s")
-              print(f"Uploader: {info['uploader']}")
-              print(f"Manual subtitles: {info['manual_subtitles']}")
-              print(f"Automatic subtitles: {info['automatic_subtitles']}")
-
-              # Write results for subsequent steps
-              with open('/tmp/yt_metadata.txt', 'w') as f:
-                  f.write(f"id={info['id']}\n")
-                  f.write(f"title={info['title']}\n")
-                  f.write(f"duration={info['duration']}\n")
-          except Exception as e:
-              print(f"::error::Metadata extraction failed: {e}")
-              sys.exit(1)
+          info = dt.inspect_source(os.environ["YOUTUBE_URL"])
+          print("Video ID:", info["id"])
+          print("Title:", info["title"])
+          print("Duration:", info["duration"])
+          print("Manual subtitles:", info["manual_subtitles"])
+          print("Automatic subtitles:", info["automatic_subtitles"])
           PY
 
-      - name: Test YouTube section download
-        id: section
+      - name: Test YouTube section download and validate media
         env:
-          YOUTUBE_URL: ${{ steps.validate.outputs.youtube_url }}
-          SECTION_START: ${{ steps.validate.outputs.section_start }}
-          SECTION_END: ${{ steps.validate.outputs.section_end }}
+          YOUTUBE_URL: ${{ steps.validate.outputs.url }}
+          SECTION_START: ${{ steps.validate.outputs.start }}
+          SECTION_END: ${{ steps.validate.outputs.end }}
         run: |
           python - <<'PY'
-          import sys
-          import os
-          import tempfile
+          import json, os, subprocess, tempfile
           from pathlib import Path
-
-          sys.path.insert(0, '.')
           import download_and_transcribe as dt
 
-          url = os.environ['YOUTUBE_URL']
-          start = float(os.environ['SECTION_START'])
-          end = float(os.environ['SECTION_END'])
-
-          with tempfile.TemporaryDirectory(prefix='yt-test-') as temp:
-              try:
-                  section = dt.download_section(url, start, end, Path(temp), retries=2)
-                  print(f"Section file: {section}")
-                  print(f"Section size: {section.stat().st_size} bytes")
-
-                  # Verify the file is a valid video with ffprobe
-                  import subprocess
-                  result = subprocess.run(
-                      ['ffprobe', '-v', 'error', '-show_entries',
-                       'stream=codec_type,codec_name,width,height',
-                       '-of', 'json', str(section)],
-                      capture_output=True, text=True, check=True)
-                  import json as _json
-                  probe = _json.loads(result.stdout)
-                  video_streams = [s for s in probe.get('streams', [])
-                                   if s.get('codec_type') == 'video']
-                  if not video_streams:
-                      print("::error::No video stream found in section file")
-                      sys.exit(1)
-                  vs = video_streams[0]
-                  print(f"Video stream: {vs.get('codec_name')} {vs.get('width')}x{vs.get('height')}")
-
-                  with open('/tmp/yt_section_info.txt', 'w') as f:
-                      f.write(f"path={section}\n")
-                      f.write(f"size={section.stat().st_size}\n")
-                      f.write(f"video_codec={vs.get('codec_name')}\n")
-                      f.write(f"video_width={vs.get('width')}\n")
-                      f.write(f"video_height={vs.get('height')}\n")
-              except Exception as e:
-                  print(f"::error::Section download failed: {e}")
-                  sys.exit(1)
+          url = os.environ["YOUTUBE_URL"]
+          start, end = float(os.environ["SECTION_START"]), float(os.environ["SECTION_END"])
+          with tempfile.TemporaryDirectory(prefix="yt-extraction-") as temp:
+              section = dt.download_section(url, start, end, Path(temp), retries=1)
+              size = section.stat().st_size
+              if size <= 1024:
+                  raise SystemExit(f"Downloaded section is unexpectedly small: {size} bytes")
+              probe = subprocess.run(
+                  ["ffprobe", "-v", "error", "-show_entries",
+                   "format=duration:stream=codec_type,codec_name,width,height",
+                   "-of", "json", str(section)],
+                  capture_output=True, text=True, check=True)
+              info = json.loads(probe.stdout)
+              videos = [s for s in info.get("streams", []) if s.get("codec_type") == "video"]
+              if not videos:
+                  raise SystemExit("ffprobe found no video stream")
+              duration = float(info.get("format", {}).get("duration") or 0)
+              if duration <= 0:
+                  raise SystemExit("ffprobe reported an invalid media duration")
+              print(f"PASS: {size} bytes, {duration:.2f}s, video={videos[0]}")
           PY
-
-      - name: Summarize results
-        run: |
-          echo "=== Metadata ==="
-          cat /tmp/yt_metadata.txt 2>/dev/null || echo "No metadata"
-          echo ""
-          echo "=== Section ==="
-          cat /tmp/yt_section_info.txt 2>/dev/null || echo "No section"
