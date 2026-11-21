@@ -389,8 +389,23 @@ class TestYtDlpExtractorArgs:
         ea = opts["extractor_args"]
         yt = ea["youtube"]
         assert yt["fetch_pot"] == ["always"]
+        assert yt["player_client"] == ["mweb", "web", "web_embedded", "android", "tv"]
+        assert opts["js_runtimes"] == {"deno": {}}
+        assert opts["remote_components"] == {"ejs:github"}
         pot_http = ea["youtubepot-bgutilhttp"]
         assert pot_http["base_url"] == ["http://127.0.0.1:4416"]
+
+    def test_ydl_opts_cookie_file(self, monkeypatch, tmp_path):
+        cookies = tmp_path / "cookies.txt"
+        cookies.write_text("# Netscape HTTP Cookie File\\n")
+        monkeypatch.setenv("YTDLP_COOKIES_FILE", str(cookies))
+        opts = dt._yt_dlp_ydl_opts()
+        assert opts["cookiefile"] == str(cookies)
+
+    def test_ydl_opts_missing_cookie_file_raises(self, monkeypatch):
+        monkeypatch.setenv("YTDLP_COOKIES_FILE", "/missing/cookies.txt")
+        with pytest.raises(RuntimeError, match="not found"):
+            dt._yt_dlp_ydl_opts()
 
     def test_ydl_opts_custom_pot_url(self, monkeypatch):
         monkeypatch.setenv("YTDLP_POT_PROVIDER_URL", "http://127.0.0.1:9999")
