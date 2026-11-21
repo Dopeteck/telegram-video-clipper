@@ -74,6 +74,19 @@ jobs:
           pip install -r requirements.txt -r requirements-dev.txt
           pip install requests boto3
 
+      - name: Update yt-dlp to nightly
+        run: |
+          # YouTube's player API changes faster than stable yt-dlp releases.
+          # The official yt-dlp project recommends nightly when stable breaks.
+          python -m pip install --upgrade --pre "yt-dlp[default]"
+          python - <<'PY'
+          import yt_dlp
+          version = yt_dlp.version.__version__
+          print(f"Using yt-dlp nightly: {version}")
+          if not any(marker in version.lower() for marker in ("dev", "nightly", "2026")):
+              print("::warning::The installed yt-dlp version does not look like a development build.")
+          PY
+
       - name: Install PO Token Provider
         run: |
           # Clone the bgutil-ytdlp-pot-provider server for PO token generation
