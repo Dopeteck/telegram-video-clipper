@@ -254,7 +254,7 @@ class TestRedactedLogging:
 
         def fake_run(cmd, **kwargs):
             kwargs["stderr"].write(
-                f"failed po_token={token} web.gvs+{token} cookies={cookie_path}\\n"
+                f"failed po_token={token} web.gvs+{token} cookies={cookie_path}\\n".encode()
             )
             raise subprocess.CalledProcessError(1, cmd)
 
