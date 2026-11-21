@@ -211,7 +211,14 @@ def run_project(path, action="all", preview=False, pick=None, resume=True, progr
                     state["source_identity"] = None
                     save_project(path, state)
             else:
-                source = Path(state.get("video", "__missing__"))
+                # A YouTube project normally has no local video because it uses
+                # subtitles for scoring and downloads only selected sections.
+                # If subtitle retrieval fails or returns an empty track, fall
+                # back to a local source download and Whisper transcription.
+                # state["video"] is explicitly None for the normal YouTube path,
+                # so do not pass it directly to pathlib.Path().
+                video_path = state.get("video")
+                source = Path(video_path).expanduser() if video_path else Path("__missing__")
                 if not source.is_file():
                     source = dt.resolve_source(state["source"], path)
                     state["video"] = str(source)
