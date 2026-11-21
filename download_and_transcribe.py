@@ -76,34 +76,42 @@ def _redact_cmd(cmd):
 
 
 def run(cmd):
-    """Run a command, logging redacted args and capturing output.
+    """Run yt-dlp without buffering large output in RAM.
 
-    On failure, prints a sanitized error summary (stderr tail) so diagnostics
-    are visible in CI logs without exposing credentials.
+    Output is spooled to temporary files. On failure, only a short sanitized
+    stderr tail is attached to CalledProcessError for existing retry logic.
     """
     print(">", " ".join(str(c) for c in _redact_cmd(cmd)), flush=True)
-    try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
-    except subprocess.CalledProcessError as exc:
-        stderr = exc.stderr or ""
-        # Print a sanitized tail of stderr for diagnostics
-        tail = stderr.strip().splitlines()[-5:] if stderr.strip() else ""
-        if tail:
-            print("ERROR stderr tail:", flush=True)
-            for line in tail:
-                # Never print PO tokens or cookie contents
-                safe_line = _redact_sensitive_text(line)
-                print(f"  {safe_line}", flush=True)
-        raise
+    with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stdout_file, \\
+         tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stderr_file:
+        try:
+            return subprocess.run(
+                cmd, check=True, stdout=stdout_file, stderr=stderr_file, text=True
+            )
+        except subprocess.CalledProcessError as exc:
+            stderr_file.flush()
+            stderr_file.seek(0, os.SEEK_END)
+            end = stderr_file.tell()
+            stderr_file.seek(max(0, end - 16384))
+            raw_tail = stderr_file.read()
+            lines = raw_tail.strip().splitlines()[-5:] if raw_tail.strip() else []
+            safe_lines = [_redact_sensitive_text(line) for line in lines]
+            exc.stderr = "\\n".join(safe_lines)
+            if safe_lines:
+                print("ERROR stderr tail:", flush=True)
+                for line in safe_lines:
+                    print(f"  {line}", flush=True)
+            raise
 
 
 def _redact_sensitive_text(text):
-    """Redact PO token values and cookie file contents from text."""
+    """Redact PO tokens and configured cookie paths from diagnostic text."""
     import re
-    # Redact po_token=VALUE patterns
-    text = re.sub(r'po_token=[^\s,;]+', 'po_token=<redacted>', text)
-    # Redact the value part of web.gvs+TOKEN patterns
-    text = re.sub(r'(web\.gvs\+)[^\s,;]+', r'\1<redacted>', text)
+    text = re.sub(r'po_token=[^\\s,;]+', 'po_token=<redacted>', text, flags=re.IGNORECASE)
+    text = re.sub(r'(web\\.gvs\\+)[^\\s,;]+', r'\\1<redacted>', text, flags=re.IGNORECASE)
+    cookie_path = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
+    if cookie_path:
+        text = text.replace(cookie_path, "<redacted-cookie-path>")
     return text
 
 
@@ -143,9 +151,9 @@ def _yt_dlp_ydl_opts():
     if cookies_file:
         cookies_path = Path(cookies_file)
         if not cookies_path.is_file():
-            raise RuntimeError(f"YTDLP_COOKIES_FILE not found: {cookies_file}")
+            raise RuntimeError("YTDLP_COOKIES_FILE does not point to an existing file")
         if not os.access(cookies_path, os.R_OK):
-            raise RuntimeError(f"YTDLP_COOKIES_FILE not readable: {cookies_file}")
+            raise RuntimeError("YTDLP_COOKIES_FILE is not readable")
         opts["cookiefile"] = str(cookies_path)
     return opts
 
