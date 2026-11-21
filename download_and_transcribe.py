@@ -191,6 +191,9 @@ def _yt_dlp_common_args():
     pot_arg, pot_val = _yt_dlp_pot_args()
     args = [pot_arg, pot_val]
     args.extend(_yt_dlp_verbose_args())
+    # YouTube requires a JavaScript runtime for some extraction paths;
+    # deno is the default but may not be available. Explicitly request it.
+    args.extend(["--js-runtimes", "deno"])
     cookies_file = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
     if cookies_file:
         cookies_path = Path(cookies_file)
