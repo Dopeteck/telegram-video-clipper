@@ -96,7 +96,7 @@ def run(cmd):
             raw_tail = stderr_file.read().decode("utf-8", errors="replace") or (exc.stderr or "")
             lines = raw_tail.strip().splitlines()[-5:] if raw_tail.strip() else []
             safe_lines = [_redact_sensitive_text(line) for line in lines]
-            exc.stderr = "\\n".join(safe_lines)
+            exc.stderr = "\n".join(safe_lines)
             if safe_lines:
                 print("ERROR stderr tail:", flush=True)
                 for line in safe_lines:
