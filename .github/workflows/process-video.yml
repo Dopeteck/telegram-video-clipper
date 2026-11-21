@@ -49,7 +49,7 @@ jobs:
           python -m pip install --upgrade --pre "yt-dlp[default]" boto3
           if (-not (Get-Command deno -ErrorAction SilentlyContinue)) {
             irm https://deno.land/install.ps1 | iex
-            $denoBin = Join-Path $HOME ".deno\\bin"
+            $denoBin = Join-Path (Join-Path $HOME ".deno") "bin"
             if (Test-Path $denoBin) {
               $env:PATH = "$denoBin;$env:PATH"
               Add-Content -Path $env:GITHUB_PATH -Value $denoBin
@@ -94,7 +94,7 @@ jobs:
               raw = base64.b64decode("".join(os.environ["YTDLP_COOKIES_B64"].split()), validate=True)
               decoded = raw.decode("utf-8-sig")
               if not any(len(line.split("\t")) == 7 for line in decoded.splitlines()
-                         if line.strip() and not line.startswith("#")):
+                         if (line.strip() and not line.startswith("#")) or line.startswith("#HttpOnly_")):
                   raise ValueError("not a Netscape cookies file")
               cookies.write_bytes(raw)
           except Exception as exc:
@@ -248,7 +248,7 @@ jobs:
       - name: Get job preferences
         id: prefs
         env:
-          JOB_ID: ${{ github.event.client_payload.job_id }}
+          JOB_ID: ${{ github.event.client_payload.job_id || inputs.job_id }}
         run: |
           python - <<'PY'
           import os
