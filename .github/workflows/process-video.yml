@@ -55,6 +55,11 @@ jobs:
           python-version: "3.11"
           cache: pip
 
+      - name: Set up Deno JavaScript runtime for yt-dlp
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
