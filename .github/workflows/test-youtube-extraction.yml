@@ -20,7 +20,7 @@ on:
       youtube_url:
         description: 'YouTube URL to test extraction against'
         required: false
-        default: 'https://www.youtube.com/watch?v=XtF6m2J0y1g'
+        default: 'https://www.youtube.com/watch?v=jNQXAC9IVRw'
         type: string
       section_start:
         description: 'Start time for section download test (seconds)'
@@ -108,7 +108,7 @@ jobs:
           import os, re, sys
           from urllib.parse import urlparse, parse_qs
 
-          url = os.environ.get("INPUT_YOUTUBE_URL", "").strip() or "https://www.youtube.com/watch?v=XtF6m2J0y1g"
+          url = os.environ.get("INPUT_YOUTUBE_URL", "").strip() or "https://www.youtube.com/watch?v=jNQXAC9IVRw"
           start = os.environ.get("INPUT_SECTION_START", "").strip() or "10"
           end = os.environ.get("INPUT_SECTION_END", "").strip() or "16"
 
