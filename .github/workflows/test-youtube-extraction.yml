@@ -35,6 +35,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-liberation fonts-noto-cjk nodejs npm
 
+      - name: Install Deno
+        run: |
+          curl -fsSL https://deno.land/x/install/install.sh | DENO_INSTALL=/tmp/deno_install sh
+          echo "/tmp/deno_install/bin" >> $GITHUB_PATH
+          deno --version
+
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
@@ -99,6 +105,15 @@ jobs:
           echo "section_start=$START" >> $GITHUB_OUTPUT
           echo "section_end=$END" >> $GITHUB_OUTPUT
 
+      - name: Verify yt-dlp and Deno availability
+        env:
+          YTDLP_POT_PROVIDER_URL: http://127.0.0.1:4416
+        run: |
+          echo "=== Deno version ==="
+          deno --version
+          echo "=== yt-dlp version ==="
+          python -m yt_dlp --version
+
       - name: Verify PO Token Provider plugin discovery
         env:
           YTDLP_VERBOSE: "1"
@@ -108,6 +123,7 @@ jobs:
           import sys
           import os
           import subprocess
+          import re
           sys.path.insert(0, '.')
           import download_and_transcribe as dt
 
@@ -119,7 +135,9 @@ jobs:
               "--verbose",
               "--skip-download",
               "--extractor-args",
-              "youtube:fetch_pot=always,youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416",
+              "youtube:fetch_pot=always",
+              "--extractor-args",
+              "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416",
               url,
           ]
           print("Running yt-dlp verbose to verify PO Token Provider discovery...", flush=True)
@@ -128,11 +146,24 @@ jobs:
           if result.stderr:
               print(result.stderr[-3000:], flush=True)
 
-          # Check for provider discovery in output
           combined = result.stdout + result.stderr
-          if "bgutil" in combined.lower() or "pot" in combined.lower():
-              print("PO Token Provider plugin discovered.", flush=True)
-          else:
+
+          # Check for provider plugin discovery - look for specific evidence
+          provider_found = False
+          # yt-dlp loads plugins via entry points; look for bgutil or pot in plugin loading
+          if "bgutil" in combined.lower() or "youtubepot" in combined.lower():
+              provider_found = True
+              print("PO Token Provider plugin loaded.", flush=True)
+
+          # Check for fetch_pot in extractor args
+          if "fetch_pot=always" in combined:
+              print("fetch_pot=always configured.", flush=True)
+
+          # Check for base_url in extractor args
+          if "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416" in combined:
+              print("PO Token Provider URL configured.", flush=True)
+
+          if not provider_found:
               print("::warning::PO Token Provider plugin not found in yt-dlp output.", flush=True)
 
           if result.returncode != 0:

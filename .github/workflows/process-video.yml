@@ -60,6 +60,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-liberation fonts-noto-cjk nodejs npm
 
+      - name: Install Deno
+        run: |
+          curl -fsSL https://deno.land/x/install/install.sh | DENO_INSTALL=/tmp/deno_install sh
+          echo "/tmp/deno_install/bin" >> $GITHUB_PATH
+          deno --version
+
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
@@ -91,6 +97,15 @@ jobs:
           exit 1
         env:
           YTDLP_POT_PROVIDER_URL: http://127.0.0.1:4416
+
+      - name: Verify yt-dlp and Deno availability
+        env:
+          YTDLP_POT_PROVIDER_URL: http://127.0.0.1:4416
+        run: |
+          echo "=== Deno version ==="
+          deno --version
+          echo "=== yt-dlp version ==="
+          python -m yt_dlp --version
 
       - name: Report job started
         env:

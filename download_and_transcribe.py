@@ -154,6 +154,17 @@ def _yt_dlp_pot_args():
     return args
 
 
+def _yt_dlp_verbose_args():
+    """Return verbose flag if diagnostics are requested.
+
+    Enabled via YTDLP_VERBOSE=1 environment variable. Logs provider plugin
+    discovery and token generation without exposing credentials.
+    """
+    if os.environ.get("YTDLP_VERBOSE", "").strip().lower() in {"1", "true", "yes"}:
+        return ["--verbose"]
+    return []
+
+
 def _yt_dlp_ydl_opts():
     """Build yt-dlp Python API options dict for consistent configuration.
 
@@ -181,6 +192,7 @@ def _yt_dlp_common_args():
     """
     args = []
     args.extend(_yt_dlp_pot_args())
+    args.extend(_yt_dlp_verbose_args())
     # YouTube requires a JavaScript runtime for some extraction paths;
     # deno is the default but may not be available. Explicitly request it.
     args.extend(["--js-runtimes", "deno"])
