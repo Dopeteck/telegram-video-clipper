@@ -97,6 +97,46 @@ class TestInspectSource:
             dt.inspect_source("https://www.youtube.com/watch?v=6uSskUaDL90")
 
 
+class TestYoutube403FormatFallback:
+    def test_403_retries_with_single_progressive_format(self, tmp_path, monkeypatch):
+        calls = []
+
+        def fake_run(cmd):
+            calls.append(cmd)
+            fmt = cmd[cmd.index("-f") + 1]
+            if "bestvideo" in fmt:
+                raise subprocess.CalledProcessError(
+                    1, cmd, stderr="ERROR: unable to download video data: HTTP Error 403: Forbidden")
+            output = Path(cmd[cmd.index("-o") + 1].replace("%(ext)s", ".mp4"))
+            output.write_bytes(b"video-bytes")
+
+        monkeypatch.setattr(dt, "run", fake_run)
+        monkeypatch.setattr(dt.time, "sleep", lambda *args: None)
+
+        result = dt._download(
+            "https://www.youtube.com/watch?v=6uSskUaDL90", tmp_path)
+
+        assert result.is_file()
+        assert len(calls) == 2
+        assert "bestvideo" in calls[0][calls[0].index("-f") + 1]
+        assert calls[1][calls[1].index("-f") + 1] == "best[height<=720]/best[height<=480]/best"
+
+    def test_non_youtube_download_does_not_add_youtube_fallback(self, tmp_path, monkeypatch):
+        calls = []
+
+        def fake_run(cmd):
+            calls.append(cmd)
+            raise subprocess.CalledProcessError(1, cmd, stderr="HTTP Error 403: Forbidden")
+
+        monkeypatch.setattr(dt, "run", fake_run)
+        monkeypatch.setattr(dt.time, "sleep", lambda *args: None)
+
+        with pytest.raises(subprocess.CalledProcessError):
+            dt._download("https://example.com/video.mp4", tmp_path)
+
+        assert len(calls) == 3
+
+
 class TestDownloadSubtitles:
     def test_prefers_manual_english_subtitles(self, tmp_path, monkeypatch):
         calls = []

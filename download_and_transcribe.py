@@ -224,25 +224,49 @@ def normalize_url(url):
 
 def _download(url, workdir, fmt="bestvideo*+bestaudio/best"):
     out_tmpl = workdir / "source.%(ext)s"
-    cmd = [
-        sys.executable, "-m", "yt_dlp",
-        "-f", fmt,
-        "--merge-output-format", "mp4",
-        "--no-playlist",
-        "-o", str(out_tmpl),
-    ]
-    cmd.extend(_yt_dlp_common_args())
-    cmd.append(url)
+    # Some YouTube CDN format URLs return 403 even after metadata and subtitle
+    # extraction succeed. A separate bestvideo+bestaudio pair is especially
+    # prone to this on hosted runners. Retry with a single progressive stream
+    # (video+audio together), capped at 720p, before giving up.
+    formats = [fmt]
+    if is_youtube_url(url) and "bestvideo" in fmt:
+        formats.append("best[height<=720]/best[height<=480]/best")
+
     last_error = None
-    for attempt in range(1, 4):
-        try:
-            run(cmd)
+    downloaded = False
+    for format_index, selected_fmt in enumerate(formats):
+        cmd = [
+            sys.executable, "-m", "yt_dlp",
+            "-f", selected_fmt,
+            "--merge-output-format", "mp4",
+            "--no-playlist",
+            "-o", str(out_tmpl),
+        ]
+        cmd.extend(_yt_dlp_common_args())
+        cmd.append(url)
+
+        for attempt in range(1, 4):
+            try:
+                run(cmd)
+                downloaded = True
+                break
+            except subprocess.CalledProcessError as exc:  # rate limits / 4xx blips
+                last_error = exc
+                stderr = getattr(exc, "stderr", "") or ""
+                is_http_403 = "http error 403" in stderr.lower() or "403: forbidden" in stderr.lower()
+                if is_http_403 and format_index + 1 < len(formats):
+                    print(
+                        "YouTube returned HTTP 403 for separate video/audio formats; "
+                        "retrying with a single progressive stream (up to 720p).",
+                        flush=True,
+                    )
+                    break
+                if attempt < 3:
+                    time.sleep(min(2 ** attempt, 20))
+        if downloaded:
             break
-        except subprocess.CalledProcessError as exc:  # rate limits / 4xx blips
-            last_error = exc
-            if attempt < 3:
-                time.sleep(min(2 ** attempt, 20))
-    else:
+
+    if not downloaded:
         stderr = getattr(last_error, "stderr", "") or ""
         if _is_bot_detection_error(stderr):
             raise RuntimeError(
@@ -250,7 +274,16 @@ def _download(url, workdir, fmt="bestvideo*+bestaudio/best"):
                 "set YTDLP_PO_TOKEN or YTDLP_COOKIES_FILE as repository secrets, "
                 "or retry later. Original error: " + stderr[:200]
             ) from last_error
+        if "http error 403" in stderr.lower() or "403: forbidden" in stderr.lower():
+            raise RuntimeError(
+                "YouTube denied the video stream with HTTP 403 after retrying "
+                "a single progressive format. Refresh YTDLP_COOKIES_B64 and, "
+                "if the video still fails on GitHub Actions, configure a valid "
+                "YTDLP_PO_TOKEN for the web.gvs context. Original error: "
+                + stderr[:200]
+            ) from last_error
         raise last_error
+
     vids = [p for p in sorted(workdir.glob("source.*"))
             if p.suffix.lower() in (".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi")]
     if not vids:
