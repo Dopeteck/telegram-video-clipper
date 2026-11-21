@@ -418,6 +418,9 @@ class TestYtDlpExtractorArgs:
         assert "--extractor-args" in args
         pot_val = args[args.index("--extractor-args") + 1]
         assert "fetch_pot=always" in pot_val
+        assert "player_client=mweb,web,web_embedded,android,tv" in pot_val
+        assert args[args.index("--js-runtimes") + 1] == "deno"
+        assert args[args.index("--remote-components") + 1] == "ejs:github"
 
     def test_common_args_includes_verbose(self, monkeypatch):
         monkeypatch.setenv("YTDLP_VERBOSE", "1")
