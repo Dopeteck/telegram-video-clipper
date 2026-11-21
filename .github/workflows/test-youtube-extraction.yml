@@ -1,6 +1,13 @@
 name: Test YouTube Extraction
 
 on:
+  push:
+    branches: [fix/youtube-bot-detection]
+    paths:
+      - 'download_and_transcribe.py'
+      - 'requirements.txt'
+      - '.github/workflows/test-youtube-extraction.yml'
+      - '.github/workflows/process-video.yml'
   pull_request:
     branches: [main]
     paths:
