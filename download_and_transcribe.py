@@ -44,7 +44,7 @@ YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com",
 
 # Player clients tried in order; web_embedded and tv are often less
 # aggressively rate-limited than the main web client on datacenter IPs.
-_YT_PLAYER_CLIENTS = "web,web_embedded,android,tv"
+_YT_PLAYER_CLIENTS = "mweb,web,web_embedded,android,tv"
 
 # PO Token context for GVS (Google Video Server) requests. Per yt-dlp docs,
 # PO Tokens use format CLIENT.CONTEXT+TOKEN (e.g. web.gvs+XXXXXXXXXXXX).
@@ -144,7 +144,14 @@ def _yt_dlp_pot_args():
     """
     args = []
     pot_url = os.environ.get("YTDLP_POT_PROVIDER_URL", _YT_POT_PROVIDER_URL)
-    args.extend(["--extractor-args", "youtube:fetch_pot=always"])
+    # yt-dlp requires options for the same extractor in one semicolon-delimited
+    # value. Start with mweb so the configured GVS PO-token provider is used,
+    # then retain compatible fallbacks for videos that reject that client.
+    youtube_args = (
+        "youtube:fetch_pot=always;"
+        f"player_client={_YT_PLAYER_CLIENTS}"
+    )
+    args.extend(["--extractor-args", youtube_args])
     args.extend(["--extractor-args",
                  f"youtubepot-bgutilhttp:base_url={pot_url}"])
     pot_home = os.environ.get("YTDLP_POT_PROVIDER_HOME", "").strip()
@@ -174,12 +181,27 @@ def _yt_dlp_ydl_opts():
     """
     opts = {"quiet": True, "no_warnings": True}
     ea = opts.setdefault("extractor_args", {})
-    ea["youtube"] = {"fetch_pot": ["always"]}
+    ea["youtube"] = {
+        "fetch_pot": ["always"],
+        "player_client": _YT_PLAYER_CLIENTS.split(","),
+    }
+    # Match the CLI configuration: Python API calls also need Deno and the
+    # remotely fetched EJS challenge solver, not yt-dlp's empty defaults.
+    opts["js_runtimes"] = {"deno": {}}
+    opts["remote_components"] = {"ejs:github"}
     pot_url = os.environ.get("YTDLP_POT_PROVIDER_URL", _YT_POT_PROVIDER_URL)
     ea["youtubepot-bgutilhttp"] = {"base_url": [pot_url]}
     pot_home = os.environ.get("YTDLP_POT_PROVIDER_HOME", "").strip()
     if pot_home:
         ea["youtubepot-bgutilscript"] = {"server_home": [pot_home]}
+    cookies_file = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
+    if cookies_file:
+        cookies_path = Path(cookies_file)
+        if not cookies_path.is_file():
+            raise RuntimeError(f"YTDLP_COOKIES_FILE not found: {cookies_file}")
+        if not os.access(cookies_path, os.R_OK):
+            raise RuntimeError(f"YTDLP_COOKIES_FILE not readable: {cookies_file}")
+        opts["cookiefile"] = str(cookies_path)
     if os.environ.get("YTDLP_VERBOSE", "").strip().lower() in {"1", "true", "yes"}:
         opts["verbose"] = True
     return opts
