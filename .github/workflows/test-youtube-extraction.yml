@@ -40,6 +40,8 @@ jobs:
   test-youtube-extraction:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      YTDLP_PO_TOKEN: ${{ secrets.YTDLP_PO_TOKEN }}
     steps:
       - name: Require the PR branch for manual runs
         if: github.event_name == 'workflow_dispatch'
@@ -87,8 +89,7 @@ jobs:
           python - <<'PY'
           import base64
           import os
-          import pathlib
-          import tempfile
+                    import tempfile
 
           encoded = os.environ.get("YTDLP_COOKIES_B64", "").strip()
           if not encoded:
@@ -102,7 +103,7 @@ jobs:
 
           lines = data.decode("utf-8-sig", errors="strict").splitlines()
           cookie_rows = [line for line in lines if line and not line.startswith("#")]
-          valid_rows = [line for line in cookie_rows if len(line.split("\\t")) == 7]
+          valid_rows = [line for line in cookie_rows if len(line.split("\t")) == 7]
           if not valid_rows or not any("youtube.com" in line.lower() or "google.com" in line.lower() for line in valid_rows):
               raise SystemExit("Cookie secret is not a valid Netscape cookie file for YouTube/Google.")
 
@@ -111,9 +112,9 @@ jobs:
           with os.fdopen(fd, "wb") as target:
               target.write(data)
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
-              env.write(f"YTDLP_COOKIES_FILE={cookie_path}\\n")
+              env.write(f"YTDLP_COOKIES_FILE={cookie_path}\n")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
-              out.write(f"cookie_path={cookie_path}\\n")
+              out.write(f"cookie_path={cookie_path}\n")
           print("YouTube cookie file prepared securely; contents and path are not logged.")
           PY
 
