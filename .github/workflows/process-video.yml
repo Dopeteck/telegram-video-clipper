@@ -106,6 +106,15 @@ jobs:
           deno --version
           echo "=== yt-dlp version ==="
           python -m yt_dlp --version
+          echo "=== bgutil PO Token Provider package ==="
+          python -m pip show bgutil-ytdlp-pot-provider
+          echo "=== registered PO Token Providers ==="
+          python -m yt_dlp --verbose --simulate --skip-download \
+            --extractor-args "youtube:fetch_pot=always;player_client=mweb" \
+            --extractor-args "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416" \
+            --js-runtimes deno --remote-components ejs:github \
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ" 2>&1 | \
+            grep -E "\\[pot\\] PO Token Providers:|Generating a .* PO Token" || true
 
       - name: Report job started
         env:
