@@ -190,6 +190,7 @@ jobs:
           import json
           import base64
           import tempfile
+          import atexit
 
           # Optional credentials are used only by this processing step.
           # Cookie data is decoded to a private temporary file and never logged.
@@ -204,6 +205,7 @@ jobs:
                   with os.fdopen(fd, 'wb') as cookie_file:
                       cookie_file.write(cookie_bytes)
                   os.environ['YTDLP_COOKIES_FILE'] = cookie_path
+                  atexit.register(lambda: os.path.exists(cookie_path) and os.unlink(cookie_path))
               except Exception as exc:
                   raise RuntimeError('YTDLP_COOKIES_B64 is invalid; expected base64-encoded Netscape cookies') from exc
 
