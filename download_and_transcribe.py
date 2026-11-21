@@ -93,7 +93,7 @@ def run(cmd):
             stderr_file.seek(0, os.SEEK_END)
             end = stderr_file.tell()
             stderr_file.seek(max(0, end - 16384))
-            raw_tail = stderr_file.read().decode("utf-8", errors="replace")
+            raw_tail = stderr_file.read().decode("utf-8", errors="replace") or (exc.stderr or "")
             lines = raw_tail.strip().splitlines()[-5:] if raw_tail.strip() else []
             safe_lines = [_redact_sensitive_text(line) for line in lines]
             exc.stderr = "\\n".join(safe_lines)
