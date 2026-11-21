@@ -34,7 +34,7 @@ jobs:
   # object already associated with this job. No video processing happens here.
   extract-youtube:
     if: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.source_url != '' }}
-    runs-on: [self-hosted, Windows, X64, youtube-extractor]
+    runs-on: [self-hosted, windows, x64, youtube-extractor]
     timeout-minutes: 90
     steps:
       - name: Set up Python
@@ -48,7 +48,15 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install --upgrade --pre "yt-dlp[default]" boto3
           if (-not (Get-Command deno -ErrorAction SilentlyContinue)) {
-            Write-Error "Deno is required on the Windows runner. Install Deno and restart the GitHub Actions runner service."
+            irm https://deno.land/install.ps1 | iex
+            $denoBin = Join-Path $HOME ".deno\\bin"
+            if (Test-Path $denoBin) {
+              $env:PATH = "$denoBin;$env:PATH"
+              Add-Content -Path $env:GITHUB_PATH -Value $denoBin
+            }
+          }
+          if (-not (Get-Command deno -ErrorAction SilentlyContinue)) {
+            Write-Error "Deno installation failed. Install Deno for the runner account and retry."
           }
           python -m yt_dlp --version
           deno --version
@@ -148,13 +156,11 @@ jobs:
       - name: Check dispatch payload
         env:
           JOB_ID: ${{ github.event.client_payload.job_id || inputs.job_id }}
-          UPLOAD_ID: ${{ github.event.client_payload.upload_id }}
-          OBJECT_KEY: ${{ github.event.client_payload.object_key }}
-          SOURCE_URL: ${{ github.event.client_payload.source_url }}
+          UPLOAD_ID: ${{ github.event.client_payload.upload_id || inputs.upload_id }}
         run: |
           echo "event=${{ github.event_name }} job_id=${JOB_ID} upload_id=${UPLOAD_ID}"
-          if [ -z "$JOB_ID" ] || [ -z "$UPLOAD_ID" ] || { [ -z "$OBJECT_KEY" ] && [ -z "$SOURCE_URL" ]; }; then
-            echo "::error::Missing job_id/upload_id and source reference in client_payload."
+          if [ -z "$JOB_ID" ] || [ -z "$UPLOAD_ID" ]; then
+            echo "::error::Missing job_id or upload_id in workflow dispatch payload."
             exit 1
           fi
 
@@ -175,45 +181,9 @@ jobs:
           pip install -r requirements.txt -r requirements-dev.txt
           pip install requests boto3
 
-      - name: Install PO Token Provider
-        run: |
-          # Clone the bgutil-ytdlp-pot-provider server for PO token generation
-          git clone --depth 1 --branch 2.0.2 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /tmp/bgutil-pot-provider
-          cd /tmp/bgutil-pot-provider/server
-          npm ci
-          npx tsc
-
-      - name: Start PO Token Provider server
-        run: |
-          nohup node /tmp/bgutil-pot-provider/server/build/main.js > /tmp/bgutil-pot-provider.log 2>&1 &
-          echo $! > /tmp/bgutil-pot-provider.pid
-          # Wait for server to be ready
-          for i in $(seq 1 30); do
-            if curl -s http://127.0.0.1:4416/ > /dev/null 2>&1; then
-              echo "PO Token Provider server is ready."
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "::error::PO Token Provider server failed to start."
-          cat /tmp/bgutil-pot-provider.log
-          exit 1
-        env:
-
-      - name: Verify yt-dlp and Deno availability
-        env:
-          YTDLP_POT_PROVIDER_URL: http://127.0.0.1:4416
-        run: |
-          echo "=== Deno version ==="
-          deno --version
-          echo "=== yt-dlp version ==="
-          python -m yt_dlp --version
-          echo "=== bgutil PO Token Provider package ==="
-          python -m pip show bgutil-ytdlp-pot-provider
-
       - name: Report job started
         env:
-          JOB_ID: ${{ github.event.client_payload.job_id }}
+          JOB_ID: ${{ github.event.client_payload.job_id || inputs.job_id }}
         run: |
           python - <<'PY'
           import os
