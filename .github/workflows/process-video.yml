@@ -111,6 +111,57 @@ jobs:
           echo "=== bgutil PO Token Provider package ==="
           python -m pip show bgutil-ytdlp-pot-provider
 
+      - name: Configure YouTube authentication cookies
+        env:
+          SOURCE_URL: ${{ github.event.client_payload.source_url }}
+          YTDLP_COOKIES_B64: ${{ secrets.YTDLP_COOKIES_B64 }}
+        run: |
+          python - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+          from urllib.parse import urlparse
+
+          source_url = os.environ.get("SOURCE_URL", "").strip()
+          host = (urlparse(source_url).hostname or "").lower()
+          youtube_hosts = {"youtube.com", "www.youtube.com", "m.youtube.com",
+                           "music.youtube.com", "youtu.be", "youtube-nocookie.com"}
+          if host not in youtube_hosts and not host.endswith(".youtube.com"):
+              print("Source is not YouTube; cookie setup is not required.")
+              raise SystemExit(0)
+
+          encoded = os.environ.get("YTDLP_COOKIES_B64", "").strip()
+          if not encoded:
+              raise SystemExit(
+                  "::error::YouTube source requires the YTDLP_COOKIES_B64 "
+                  "repository Actions secret. Add the Base64-encoded Netscape "
+                  "cookies.txt as a repository secret (not an Environment secret)."
+              )
+
+          try:
+              raw = base64.b64decode("".join(encoded.split()), validate=True)
+              text = raw.decode("utf-8-sig")
+          except Exception as exc:
+              raise SystemExit(f"::error::YTDLP_COOKIES_B64 is not valid Base64 UTF-8: {type(exc).__name__}")
+
+          cookie_rows = [
+              line for line in text.splitlines()
+              if (line.strip() and not line.startswith("#")) or line.startswith("#HttpOnly_")
+          ]
+          if not any(len(line.split("\t")) == 7 for line in cookie_rows):
+              raise SystemExit(
+                  "::error::Decoded YTDLP_COOKIES_B64 is not a valid Netscape "
+                  "cookies.txt file (no seven-column cookie records found)."
+              )
+
+          cookie_path = Path("/tmp/youtube_cookies.txt")
+          cookie_path.write_bytes(raw)
+          cookie_path.chmod(0o600)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write(f"YTDLP_COOKIES_FILE={cookie_path}\n")
+          print("YouTube authentication cookies configured for yt-dlp.")
+          PY
+
       - name: Report job started
         env:
           JOB_ID: ${{ github.event.client_payload.job_id }}
