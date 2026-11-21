@@ -246,25 +246,33 @@ class TestRedactedLogging:
         assert "--no-playlist" in flat
         assert "https://www.youtube.com/watch?v=x" in flat
 
-    def test_run_redacts_po_token(self, monkeypatch, capfd):
-        monkeypatch.setenv("YTDLP_PO_TOKEN", "secret-po-token-value")
-        calls = []
+    def test_run_redacts_po_token_and_cookie_path_in_real_run(self, monkeypatch, capfd, tmp_path):
+        token = "secret-po-token-value"
+        cookie_path = str(tmp_path / "private-cookies.txt")
+        monkeypatch.setenv("YTDLP_PO_TOKEN", token)
+        monkeypatch.setenv("YTDLP_COOKIES_FILE", cookie_path)
 
-        def fake_run(cmd):
-            calls.append(cmd)
-            # Simulate yt-dlp producing output
-            for c in cmd:
-                if c.startswith("source."):
-                    Path(c).write_bytes(b"x")
+        def fake_run(cmd, **kwargs):
+            kwargs["stderr"].write(
+                f"failed po_token={token} web.gvs+{token} cookies={cookie_path}\\n"
+            )
+            raise subprocess.CalledProcessError(1, cmd)
 
-        monkeypatch.setattr(dt, "run", fake_run)
-        # Just test _redact_cmd since run() calls _redact_cmd internally
-        cmd = [sys.executable, "-m", "yt_dlp",
-               "--extractor-args", "youtube:po_token=secret-po-token-value",
-               "https://www.youtube.com/watch?v=x"]
-        redacted = dt._redact_cmd(cmd)
-        flat = " ".join(str(c) for c in redacted)
-        assert "secret-po-token-value" not in flat
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        with pytest.raises(subprocess.CalledProcessError) as caught:
+            dt.run([
+                sys.executable, "-m", "yt_dlp",
+                "--cookies", cookie_path,
+                "--extractor-args", f"youtube:po_token=web.gvs+{token}",
+                "https://www.youtube.com/watch?v=x",
+            ])
+
+        captured = capfd.readouterr()
+        combined = captured.out + (caught.value.stderr or "")
+        assert token not in combined
+        assert cookie_path not in combined
+        assert "<redacted>" in combined
+        assert "<redacted-cookie-path>" in combined
 
 
 class TestYtDlpExtractorArgs:
