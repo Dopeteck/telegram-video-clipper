@@ -322,10 +322,10 @@ class TestYouTubeRenderArchitecture:
 
         projects.run_project(path, action="render")
 
-        # Verify _yt_dlp_section uses 1080p format by checking download_and_transcribe source
+        # Verify _yt_dlp_section uses progressive format cap (720p) by checking download_and_transcribe source
         import inspect
         source = inspect.getsource(dt._yt_dlp_section)
-        assert "height<=1080" in source, "Remote section extraction must cap at 1080p"
+        assert "height<=720" in source, "Remote section extraction must cap at 720p for progressive format"
 
     def test_youtube_render_cleanup_on_failure(
         self, tmp_path, monkeypatch, yt_info

@@ -58,13 +58,56 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-liberation fonts-noto-cjk
+          sudo apt-get install -y ffmpeg fonts-liberation fonts-noto-cjk nodejs npm
+
+      - name: Install Deno
+        run: |
+          curl -fsSL https://deno.land/x/install/install.sh | DENO_INSTALL=/tmp/deno_install sh
+          echo "/tmp/deno_install/bin" >> $GITHUB_PATH
+          deno --version
 
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
           pip install requests boto3
+
+      - name: Install PO Token Provider
+        run: |
+          # Clone the bgutil-ytdlp-pot-provider server for PO token generation
+          git clone --depth 1 --branch 2.0.2 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /tmp/bgutil-pot-provider
+          cd /tmp/bgutil-pot-provider/server
+          npm ci
+          npx tsc
+
+      - name: Start PO Token Provider server
+        run: |
+          nohup node /tmp/bgutil-pot-provider/server/build/main.js > /tmp/bgutil-pot-provider.log 2>&1 &
+          echo $! > /tmp/bgutil-pot-provider.pid
+          # Wait for server to be ready
+          for i in $(seq 1 30); do
+            if curl -s http://127.0.0.1:4416/ > /dev/null 2>&1; then
+              echo "PO Token Provider server is ready."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::PO Token Provider server failed to start."
+          cat /tmp/bgutil-pot-provider.log
+          exit 1
+        env:
+          YTDLP_POT_PROVIDER_URL: http://127.0.0.1:4416
+
+      - name: Verify yt-dlp and Deno availability
+        env:
+          YTDLP_POT_PROVIDER_URL: http://127.0.0.1:4416
+        run: |
+          echo "=== Deno version ==="
+          deno --version
+          echo "=== yt-dlp version ==="
+          python -m yt_dlp --version
+          echo "=== bgutil PO Token Provider package ==="
+          python -m pip show bgutil-ytdlp-pot-provider
 
       - name: Report job started
         env:
@@ -175,6 +218,7 @@ jobs:
           ENABLE_TIGHTEN: ${{ steps.prefs.outputs.enable_tighten }}
           ENABLE_LOUDNORM: ${{ steps.prefs.outputs.enable_loudnorm }}
           JOB_ID: ${{ github.event.client_payload.job_id }}
+          YTDLP_POT_PROVIDER_URL: http://127.0.0.1:4416
         run: |
           python - <<'PY'
           import os
