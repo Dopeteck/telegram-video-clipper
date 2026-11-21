@@ -221,16 +221,17 @@ class TestRedactedLogging:
         assert "youtube:player_client=web" not in flat
 
     def test_redact_cookies_in_extractor_args(self):
+        """Cookies passed via --cookies separate arg, not in extractor-args."""
         cmd = [
             sys.executable, "-m", "yt_dlp",
-            "--extractor-args",
-            "youtube:player_client=web,cookies=/secret/cookies.txt",
+            "--cookies", "/secret/path/to/cookies.txt",
             "https://www.youtube.com/watch?v=x",
         ]
         redacted = dt._redact_cmd(cmd)
         flat = " ".join(str(c) for c in redacted)
-        assert "/secret/cookies.txt" not in flat
+        assert "/secret/path/to/cookies.txt" not in flat
         assert "<redacted>" in flat
+        assert "--cookies" in flat
 
     def test_non_sensitive_args_preserved(self):
         cmd = [
@@ -270,9 +271,7 @@ class TestYtDlpExtractorArgs:
     """Test that --extractor-args combines player_client and po_token correctly."""
 
     def test_single_extractor_args_with_player_clients(self):
-        args = dt._yt_dlp_extractor_args()
-        assert args[0] == "--extractor-args"
-        val = args[1]
+        val = dt._yt_dlp_extractor_args()
         assert val.startswith("youtube:player_client=")
         assert "web" in val
         assert "web_embedded" in val
@@ -281,19 +280,125 @@ class TestYtDlpExtractorArgs:
 
     def test_po_token_combined_with_player_client(self, monkeypatch):
         monkeypatch.setenv("YTDLP_PO_TOKEN", "test-po-token-123")
-        args = dt._yt_dlp_extractor_args()
-        assert args[0] == "--extractor-args"
-        val = args[1]
+        val = dt._yt_dlp_extractor_args()
         assert "player_client=" in val
-        assert "po_token=test-po-token-123" in val
-        # Only one --extractor-args should exist
-        assert args.count("--extractor-args") == 1
+        assert "po_token=web.gvs+test-po-token-123" in val
 
     def test_no_po_token_when_env_unset(self, monkeypatch):
         monkeypatch.delenv("YTDLP_PO_TOKEN", raising=False)
-        args = dt._yt_dlp_extractor_args()
-        val = args[1]
+        val = dt._yt_dlp_extractor_args()
         assert "po_token" not in val
+
+
+class TestPoTokenFormat:
+    """Test that PO Token uses correct client.context+TOKEN format."""
+
+    def test_po_token_uses_web_gvs_format(self, monkeypatch):
+        monkeypatch.setenv("YTDLP_PO_TOKEN", "test-token-123")
+        val = dt._yt_dlp_extractor_args()
+        assert "po_token=web.gvs+test-token-123" in val
+
+    def test_po_token_no_bare_format(self, monkeypatch):
+        """PO Token must NOT be in bare po_token=TOKEN format."""
+        monkeypatch.setenv("YTDLP_PO_TOKEN", "test-token-123")
+        val = dt._yt_dlp_extractor_args()
+        # The bare token without client.context prefix should NOT appear
+        assert ",po_token=test-token-123" not in val
+        assert "po_token=web.gvs+test-token-123" in val
+
+    def test_ydl_opts_po_token_format(self, monkeypatch):
+        """Python API opts must also use web.gvs+TOKEN format."""
+        monkeypatch.setenv("YTDLP_PO_TOKEN", "test-token-123")
+        opts = dt._yt_dlp_ydl_opts()
+        pot = opts["extractor_args"]["youtube"]["po_token"]
+        assert pot == ["web.gvs+test-token-123"]
+
+
+class TestInspectSourceConfig:
+    """Test that inspect_source() applies the same config as CLI paths."""
+
+    def test_inspect_source_uses_player_clients(self, monkeypatch):
+        ydl_opts = dt._yt_dlp_ydl_opts()
+        clients = ydl_opts["extractor_args"]["youtube"]["player_client"]
+        assert "web" in clients
+        assert "web_embedded" in clients
+        assert "android" in clients
+        assert "tv" in clients
+
+    def test_inspect_source_skips_download(self, monkeypatch):
+        ydl_opts = dt._yt_dlp_ydl_opts()
+        ydl_opts["skip_download"] = True
+        assert ydl_opts["skip_download"] is True
+
+    def test_inspect_source_quiet(self, monkeypatch):
+        ydl_opts = dt._yt_dlp_ydl_opts()
+        assert ydl_opts.get("quiet") is True
+        assert ydl_opts.get("no_warnings") is True
+
+
+class TestRunErrorDiagnostics:
+    """Test that run() preserves useful diagnostics on failure."""
+
+    def test_run_prints_stderr_tail_on_failure(self, monkeypatch, capfd):
+        class FakeCalledProcessError(subprocess.CalledProcessError):
+            def __init__(self):
+                super().__init__(1, ["fake", "cmd"],
+                                 stderr="\n".join([
+                                     "line 1: network timeout",
+                                     "line 2: retrying",
+                                     "line 3: still failing",
+                                     "line 4: connection dropped",
+                                     "line 5: final attempt",
+                                     "line 6: final failure: connection refused",
+                                 ]))
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(
+            FakeCalledProcessError()))
+
+        with pytest.raises(subprocess.CalledProcessError):
+            dt.run(["fake", "cmd"])
+
+        captured = capfd.readouterr()
+        # stderr tail (last 5 lines) should appear in output
+        assert "final failure: connection refused" in captured.out
+        assert "line 5: final attempt" in captured.out
+        # "line 1: network timeout" should NOT appear (truncated by tail)
+        assert "line 1: network timeout" not in captured.out
+
+
+class TestRunErrorSanitization:
+    """Test that run() never exposes secrets in error output."""
+
+    def test_run_redacts_po_token_in_stderr(self, monkeypatch, capfd):
+        class FakeCalledProcessError(subprocess.CalledProcessError):
+            def __init__(self):
+                super().__init__(1, ["cmd"],
+                                 stderr="Error: po_token=secret-value-123 failed")
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(
+            FakeCalledProcessError()))
+
+        with pytest.raises(subprocess.CalledProcessError):
+            dt.run(["cmd"])
+
+        captured = capfd.readouterr()
+        assert "secret-value-123" not in captured.out
+        assert "<redacted>" in captured.out or "po_token=<redacted>" in captured.out
+
+    def test_run_redacts_web_gvs_token_in_stderr(self, monkeypatch, capfd):
+        class FakeCalledProcessError(subprocess.CalledProcessError):
+            def __init__(self):
+                super().__init__(1, ["cmd"],
+                                 stderr="Error: web.gvs+secret-token-value failed")
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(
+            FakeCalledProcessError()))
+
+        with pytest.raises(subprocess.CalledProcessError):
+            dt.run(["cmd"])
+
+        captured = capfd.readouterr()
+        assert "secret-token-value" not in captured.out
 
 
 class TestCookieFileHandling:

@@ -11,8 +11,9 @@ No external/paid APIs. CPU-friendly (int8). Usage:
     python download_and_transcribe.py <youtube_url> --model small
 
 YouTube extraction options (environment variables):
-    YTDLP_PO_TOKEN    Optional YouTube PO Token for bypassing bot detection
-                      (provide as a GitHub Actions secret if needed).
+    YTDLP_PO_TOKEN    Optional YouTube PO Token for bypassing bot detection.
+                      Format: CLIENT.CONTEXT+TOKEN (e.g. web.gvs+XXXXXXXXXXXX).
+                      Provide as a GitHub Actions secret if needed.
     YTDLP_COOKIES_FILE Optional path to a Netscape-format cookies file.
                       Do not commit personal cookies to the repository.
 """
@@ -36,13 +37,18 @@ from yt_dlp.utils import DownloadError
 # aggressively rate-limited than the main web client on datacenter IPs.
 _YT_PLAYER_CLIENTS = "web,web_embedded,android,tv"
 
+# PO Token context for GVS (Google Video Server) requests. Per yt-dlp docs,
+# PO Tokens use the format CLIENT.CONTEXT+TOKEN. The `web` client requires a
+# GVS PO Token for format URLs on most datacenter IPs.
+_YT_PO_TOKEN_CONTEXT = "web.gvs"
+
 
 def _redact_cmd(cmd):
     """Return a copy of cmd with sensitive arguments redacted for logging.
 
     Redacts:
         - --cookies <path> -> --cookies <redacted>
-        - --extractor-args containing po_token or cookies -> <redacted> value
+        - --extractor-args containing po_token -> <redacted> value
     """
     redacted = []
     i = 0
@@ -58,7 +64,7 @@ def _redact_cmd(cmd):
             redacted.append(c)
             if i + 1 < len(cmd):
                 val = cmd[i + 1]
-                if "po_token" in val or "cookies" in val:
+                if "po_token" in val:
                     redacted.append("<redacted>")
                 else:
                     redacted.append(val)
@@ -70,30 +76,86 @@ def _redact_cmd(cmd):
 
 
 def run(cmd):
+    """Run a command, logging redacted args and capturing output.
+
+    On failure, prints a sanitized error summary (stderr tail) so diagnostics
+    are visible in CI logs without exposing credentials.
+    """
     print(">", " ".join(str(c) for c in _redact_cmd(cmd)), flush=True)
-    subprocess.run(cmd, check=True, capture_output=True, text=True)
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr or ""
+        # Print a sanitized tail of stderr for diagnostics
+        tail = stderr.strip().splitlines()[-5:] if stderr.strip() else ""
+        if tail:
+            print("ERROR stderr tail:", flush=True)
+            for line in tail:
+                # Never print PO tokens or cookie contents
+                safe_line = _redact_sensitive_text(line)
+                print(f"  {safe_line}", flush=True)
+        raise
+
+
+def _redact_sensitive_text(text):
+    """Redact PO token values and cookie file contents from text."""
+    import re
+    # Redact po_token=VALUE patterns
+    text = re.sub(r'po_token=[^\s,;]+', 'po_token=<redacted>', text)
+    # Redact the value part of web.gvs+TOKEN patterns
+    text = re.sub(r'(web\.gvs\+)[^\s,;]+', r'\1<redacted>', text)
+    return text
 
 
 def _yt_dlp_extractor_args():
-    """Build a single --extractor-args combining player_client and po_token.
+    """Build extractor-args value for youtube extractor.
 
-    Combines both into one --extractor-args value so they don't conflict:
-        --extractor-args "youtube:player_client=web,web_embedded,android,tv,po_token=..."
+    Combines player_client and optional po_token into a single value:
+        youtube:player_client=web,web_embedded,android,tv[,po_token=web.gvs+...]
+
+    Per yt-dlp docs, PO Tokens use format CLIENT.CONTEXT+TOKEN.
     """
     parts = [f"player_client={_YT_PLAYER_CLIENTS}"]
     po_token = os.environ.get("YTDLP_PO_TOKEN", "").strip()
     if po_token:
-        parts.append(f"po_token={po_token}")
-    return ["--extractor-args", f"youtube:{','.join(parts)}"]
+        # PO Token format: CLIENT.CONTEXT+TOKEN
+        parts.append(f"po_token={_YT_PO_TOKEN_CONTEXT}+{po_token}")
+    return f"youtube:{','.join(parts)}"
+
+
+def _yt_dlp_ydl_opts():
+    """Build yt-dlp Python API options dict for consistent configuration.
+
+    Applies to all call sites: metadata inspection, full download,
+    section download, subtitle download. Returns a dict suitable for
+    yt_dlp.YoutubeDL(opts).
+    """
+    opts = {"quiet": True, "no_warnings": True}
+    opts["extractor_args"] = {"youtube": {
+        "player_client": _YT_PLAYER_CLIENTS.split(","),
+    }}
+    po_token = os.environ.get("YTDLP_PO_TOKEN", "").strip()
+    if po_token:
+        opts["extractor_args"]["youtube"]["po_token"] = [
+            f"{_YT_PO_TOKEN_CONTEXT}+{po_token}"
+        ]
+    cookies_file = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
+    if cookies_file:
+        cookies_path = Path(cookies_file)
+        if not cookies_path.is_file():
+            raise RuntimeError(f"YTDLP_COOKIES_FILE not found: {cookies_file}")
+        if not os.access(cookies_path, os.R_OK):
+            raise RuntimeError(f"YTDLP_COOKIES_FILE not readable: {cookies_file}")
+        opts["cookiefile"] = str(cookies_path)
+    return opts
 
 
 def _yt_dlp_common_args():
-    """Common yt-dlp CLI args for all YouTube invocations.
+    """Common yt-dlp CLI args for all YouTube CLI invocations.
 
-    Includes player_client rotation and optional po_token via --extractor-args,
-    plus optional cookies file via the dedicated --cookies option.
+    Applies to: _download(), download_subtitles(), _yt_dlp_section().
     """
-    args = _yt_dlp_extractor_args()
+    args = ["--extractor-args", _yt_dlp_extractor_args()]
     cookies_file = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
     if cookies_file:
         cookies_path = Path(cookies_file)
@@ -226,7 +288,8 @@ def inspect_source(url):
     """YouTube metadata without downloading video: id, title, duration,
     available subtitle languages. Raises RuntimeError on lookup failure."""
     url = normalize_url(url)
-    ydl_opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+    ydl_opts = _yt_dlp_ydl_opts()
+    ydl_opts["skip_download"] = True
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
