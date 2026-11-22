@@ -132,7 +132,7 @@ jobs:
                                 retries={"mode": "standard", "total_max_attempts": 4}),
               )
               client.upload_file(str(source), os.environ["R2_BUCKET"], os.environ["OBJECT_KEY"],
-                                 ExtraArgs={"ContentType": "video/mp4"})
+                                 ExtraArgs={"ContentType": {".mp4": "video/mp4", ".mkv": "video/x-matroska", ".webm": "video/webm", ".mov": "video/quicktime"}.get(source.suffix.lower(), "application/octet-stream")})
               head = client.head_object(Bucket=os.environ["R2_BUCKET"], Key=os.environ["OBJECT_KEY"])
               if head.get("ContentLength", 0) != source.stat().st_size:
                   raise RuntimeError("R2 source verification failed: uploaded size mismatch")
@@ -340,7 +340,7 @@ jobs:
       - name: Upload clips to R2
         id: upload
         env:
-          JOB_ID: ${{ github.event.client_payload.job_id }}
+          JOB_ID: ${{ github.event.client_payload.job_id || inputs.job_id }}
           CLIPS_JSON: ${{ steps.chopify.outputs.clips }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -411,7 +411,7 @@ jobs:
       - name: Report completion to Worker
         if: always()
         env:
-          JOB_ID: ${{ github.event.client_payload.job_id }}
+          JOB_ID: ${{ github.event.client_payload.job_id || inputs.job_id }}
           CLIPS_JSON: ${{ steps.upload.outputs.uploaded }}
           CHOPIFY_OUTCOME: ${{ steps.chopify.outcome }}
           UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
