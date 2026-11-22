@@ -211,7 +211,13 @@ def run_project(path, action="all", preview=False, pick=None, resume=True, progr
                     state["source_identity"] = None
                     save_project(path, state)
             else:
-                source = Path(state.get("video", "__missing__"))
+                # YouTube videos may not expose downloadable English subtitles.
+                # In that case the source state deliberately has video=None; fall
+                # back to a full-source download for Whisper instead of passing
+                # None to Path(). Keep yt_url so selected clip sections are still
+                # extracted remotely during rendering.
+                source_value = state.get("video")
+                source = Path(source_value).expanduser() if source_value else Path("__missing__")
                 if not source.is_file():
                     source = dt.resolve_source(state["source"], path)
                     state["video"] = str(source)

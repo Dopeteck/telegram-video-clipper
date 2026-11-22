@@ -109,6 +109,55 @@ class TestProjectsYouTubePrepare:
         assert st["sub_path"] is not None
         assert st["status"] == "review"
 
+    def test_youtube_without_subtitles_falls_back_to_whisper_transcription(
+        self, tmp_path, monkeypatch, yt_info
+    ):
+        monkeypatch.setattr(
+            dt, "inspect_source", lambda url: {**yt_info, "url": url}
+        )
+        monkeypatch.setattr(dt, "download_subtitles", lambda *a, **k: None)
+
+        source_file = tmp_path / "fallback-source.mp4"
+        source_file.write_bytes(b"fake-video")
+        monkeypatch.setattr(dt, "resolve_source", lambda source, workdir: source_file)
+
+        transcribe_calls = []
+
+        def fake_transcribe(source, workdir, model_size, device, compute_type, language=None):
+            transcribe_calls.append(Path(source))
+            transcript = {
+                "video": str(source), "language": "en", "duration": 2914.0,
+                "segments": [{"start": 0.0, "end": 30.0, "text": "fallback transcript"}],
+                "words": [{"word": "fallback", "start": 0.0, "end": 1.0}],
+            }
+            (Path(workdir) / "transcript.json").write_text(json.dumps(transcript))
+
+        monkeypatch.setattr(dt, "transcribe", fake_transcribe)
+        monkeypatch.setattr(
+            projects.score_clips, "run",
+            lambda path, **kwargs: projects.atomic_json(
+                Path(path) / "segments.json",
+                [{"start": 0.0, "end": 30.0, "hook": "fallback", "overall": 8.0}],
+            ),
+        )
+
+        options = projects.validate_options(
+            {"aspect": "9:16", "min_len": 5, "max_len": 40, "min_score": 0}
+        )
+        state = projects.create_project(
+            tmp_path, "https://www.youtube.com/watch?v=6uSskUaDL90", options
+        )
+        path = projects.project_path(tmp_path, state["id"])
+
+        result = projects.run_project(path, action="prepare")
+        saved = projects.read_project(path)
+
+        assert transcribe_calls == [source_file]
+        assert saved["video"] == str(source_file)
+        assert saved["yt_url"] == "https://www.youtube.com/watch?v=6uSskUaDL90"
+        assert saved["status"] == "review"
+        assert result["status"] == "review"
+
     def test_youtube_prepare_handles_lookup_failure(self, tmp_path, monkeypatch):
         class BrokenYDL:
             def __enter__(self):
