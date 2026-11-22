@@ -38,7 +38,7 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Allow Python setup scripts for this runner account
-        shell: pwsh
+        shell: powershell
         run: |
           Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy Bypass -Force
           Get-ExecutionPolicy -List
@@ -415,6 +415,13 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
               out.write(f'uploaded={json.dumps(uploaded)}\n')
           PY
+
+      - name: Fail workflow when YouTube extraction failed
+        if: ${{ always() && needs.extract-youtube.result == 'failure' }}
+        shell: bash
+        run: |
+          echo "::error::YouTube extraction failed on the Windows runner; clipping was not started."
+          exit 1
 
       - name: Report completion to Worker
         if: always()
