@@ -74,9 +74,8 @@ jobs:
           for tool in python3 ffmpeg ffprobe; do
             command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
           done
-          python3 -c "import yt_dlp, boto3" 2>/dev/null || missing="$missing python-modules"
           if [ -n "$missing" ]; then
-            echo "::error::Runner is missing required tools:$missing. Install python3, python3-venv, ffmpeg, yt-dlp, and boto3 on the self-hosted runner."
+            echo "::error::Runner is missing:$missing. In Ubuntu run: sudo apt install -y python3 ffmpeg (see docs/YOUTUBE_RUNNER_SETUP.md)."
             exit 1
           fi
 
@@ -86,10 +85,16 @@ jobs:
           python-version: "3.11"
           cache: pip
 
+      - name: Set up Deno (JavaScript runtime yt-dlp needs for YouTube)
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install yt-dlp boto3 requests
+          pip install --upgrade "yt-dlp[default]" boto3 requests
+          deno --version
 
       - name: Download YouTube video
         id: download
@@ -97,10 +102,13 @@ jobs:
         env:
           SOURCE_URL: ${{ github.event.client_payload.source_url || inputs.source_url || '' }}
           JOB_ID: ${{ github.event.client_payload.job_id || github.event.inputs.job_id }}
+          # Optional. Base64 of a Netscape cookies.txt from a throwaway Google account.
+          YTDLP_COOKIES_B64: ${{ secrets.YTDLP_COOKIES_B64 }}
         run: |
           python - <<'PY'
-          import os
+          import base64
           import glob
+          import os
           import subprocess
           import sys
 
@@ -108,31 +116,53 @@ jobs:
           job_id = os.environ['JOB_ID']
           temp = os.environ.get('RUNNER_TEMP') or os.environ.get('TEMP') or '/tmp'
           out_tmpl = os.path.join(temp, f'yt_source_{job_id}.%(ext)s')
+          cookies_path = os.path.join(temp, f'yt_cookies_{job_id}.txt')
 
-          # Single-file mp4 only: no ffmpeg merge required on the Linux runner.
-          cmd = [
-              sys.executable, '-m', 'yt_dlp',
-              '-f', 'best[ext=mp4]/best',
-              '--no-playlist',
-              '-o', out_tmpl,
-              url,
-          ]
-          print('Downloading YouTube source...')
-          try:
-              subprocess.run(cmd, check=True)
-          except subprocess.CalledProcessError:
-              # Clean up any partial downloads on failure.
+          def cleanup_partials():
               for path in glob.glob(os.path.join(temp, f'yt_source_{job_id}.*')):
                   try:
                       os.unlink(path)
                   except OSError:
                       pass
-              raise
 
-          matches = glob.glob(os.path.join(temp, f'yt_source_{job_id}.*'))
+          # Up to 1080p video + audio merged into one mp4 (ffmpeg is a runner prerequisite).
+          cmd = [
+              sys.executable, '-m', 'yt_dlp',
+              '-f', 'bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b',
+              '--merge-output-format', 'mp4',
+              '--no-playlist',
+              '--no-progress',
+              '-o', out_tmpl,
+          ]
+          cookies_b64 = os.environ.get('YTDLP_COOKIES_B64', '').strip()
+          if cookies_b64:
+              fd = os.open(cookies_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+              with os.fdopen(fd, 'wb') as fh:
+                  fh.write(base64.b64decode(cookies_b64))
+              cmd += ['--cookies', cookies_path]
+              print('Using configured YouTube cookies.')
+          cmd.append(url)
+
+          print('Downloading YouTube source...')
+          try:
+              subprocess.run(cmd, check=True)
+          except subprocess.CalledProcessError:
+              # Clean up any partial downloads on failure.
+              cleanup_partials()
+              raise
+          finally:
+              # Cookies never stay on disk after the step.
+              try:
+                  os.unlink(cookies_path)
+              except OSError:
+                  pass
+
+          matches = [m for m in glob.glob(os.path.join(temp, f'yt_source_{job_id}.*'))
+                     if not m.endswith(('.part', '.ytdl'))]
           if not matches:
               raise SystemExit('YouTube download produced no file')
-          video = matches[0]
+          mp4s = [m for m in matches if m.endswith('.mp4')]
+          video = max(mp4s or matches, key=os.path.getsize)
           print(f'Downloaded {os.path.getsize(video)} bytes to {video}')
           if os.path.getsize(video) == 0:
               os.unlink(video)

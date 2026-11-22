@@ -141,7 +141,7 @@ def test_process_video_passes_r2_configuration_to_upload_step():
 
 
 # ---------------------------------------------------------------------------
-# extract-youtube job (self-hosted Windows runner) regression guards
+# extract-youtube job (self-hosted Linux/WSL2 runner) regression guards
 # ---------------------------------------------------------------------------
 def _extract():
     return _load("process-video.yml")["jobs"]["extract-youtube"]
@@ -171,7 +171,7 @@ def test_extract_job_verifies_runner_prerequisites():
     step = next(s for s in _extract_steps() if s["name"] == "Verify runner prerequisites")
     assert step.get("shell") == "bash"
     run = step["run"]
-    for tool in ("python3", "ffmpeg", "ffprobe", "yt_dlp", "boto3"):
+    for tool in ("python3", "ffmpeg", "ffprobe"):
         assert tool in run, f"prerequisite check missing {tool}"
 
 
@@ -183,11 +183,26 @@ def test_extract_job_conditional_runs_for_both_dispatch_types():
     assert "client_payload.source_url" in cond
 
 
-def test_extract_job_no_new_secrets_or_cookies():
+def test_extract_job_never_changes_powershell_policy_or_registry():
     text = (WORKFLOWS / "process-video.yml").read_text(encoding="utf-8")
-    assert "YTDLP_COOKIES_B64" not in text
-    assert "deno" not in text.lower()
-    assert "nodejs" not in text
+    for forbidden in ("reg add", "ExecutionPolicy", "HKLM", "HKCU", "shell: pwsh", "runs-on: windows"):
+        assert forbidden not in text, forbidden
+
+
+def test_extract_job_installs_deno_and_current_ytdlp_before_download():
+    names = [s["name"] for s in _extract_steps()]
+    assert names.index("Set up Deno (JavaScript runtime yt-dlp needs for YouTube)") < names.index("Download YouTube video")
+    install = next(s for s in _extract_steps() if s["name"] == "Install Python dependencies")
+    assert "yt-dlp[default]" in install["run"]
+
+
+def test_extract_download_merges_video_and_audio_and_handles_cookies_safely():
+    run = next(s for s in _extract_steps() if s["name"] == "Download YouTube video")["run"]
+    assert "--merge-output-format" in run and "bv*" in run
+    assert "best[ext=mp4]/best" not in run
+    assert "0o600" in run and "os.unlink(cookies_path)" in run
+    assert "print(cookies" not in run and "print(cmd" not in run
+    assert "capture_output" not in run  # logs stay yt-dlp's own output, never the cookie file
 
 
 def test_extract_download_step_compiles_and_cleans_partials():
