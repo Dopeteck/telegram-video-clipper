@@ -13,6 +13,14 @@ on:
         description: 'Upload ID'
         required: true
         type: string
+      source_url:
+        description: 'YouTube URL (only for uploads created by a YouTube import)'
+        required: false
+        type: string
+      object_key:
+        description: 'R2 object key of the upload (required when source_url is set)'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -29,23 +37,183 @@ env:
 # reject any log line that is not `key=value` with "Invalid format".)
 
 jobs:
-  process:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+  extract-youtube:
+    name: Extract YouTube source to R2
+    runs-on: [self-hosted, linux, x64, youtube-extractor]
+    timeout-minutes: 30
+    # Only YouTube sources are extracted here. Non-YouTube sources are downloaded
+    # directly by the `process` job from a Worker presigned URL.
+    if: ${{ (github.event_name == 'repository_dispatch' && contains(github.event.client_payload.source_url || '', 'youtube.com')) || (github.event_name == 'workflow_dispatch' && contains(inputs.source_url || '', 'youtube.com')) }}
+    outputs:
+      source_r2_key: ${{ steps.upload.outputs.source_r2_key }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Check dispatch payload
+        id: validate
         env:
-          JOB_ID: ${{ github.event.client_payload.job_id }}
-          UPLOAD_ID: ${{ github.event.client_payload.upload_id }}
-          OBJECT_KEY: ${{ github.event.client_payload.object_key }}
-          SOURCE_URL: ${{ github.event.client_payload.source_url }}
+          JOB_ID: ${{ github.event.client_payload.job_id || github.event.inputs.job_id }}
+          UPLOAD_ID: ${{ github.event.client_payload.upload_id || github.event.inputs.upload_id }}
+          SOURCE_URL: ${{ github.event.client_payload.source_url || inputs.source_url || '' }}
         run: |
           echo "event=${{ github.event_name }} job_id=${JOB_ID} upload_id=${UPLOAD_ID}"
-          if [ -z "$JOB_ID" ] || [ -z "$UPLOAD_ID" ] || { [ -z "$OBJECT_KEY" ] && [ -z "$SOURCE_URL" ]; }; then
-            echo "::error::Missing job_id/upload_id and source reference in client_payload."
+          if [ -z "$JOB_ID" ] || [ -z "$UPLOAD_ID" ] || [ -z "$SOURCE_URL" ]; then
+            echo "::error::Missing job_id/upload_id/source_url for YouTube extraction."
+            exit 1
+          fi
+          case "$SOURCE_URL" in
+            *youtube.com*|*youtu.be*) echo "is_youtube=1" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::Source is not a YouTube URL: $SOURCE_URL"; exit 1 ;;
+          esac
+
+      - name: Verify runner prerequisites
+        shell: bash
+        run: |
+          missing=""
+          for tool in python3 ffmpeg ffprobe; do
+            command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+          done
+          python3 -c "import yt_dlp, boto3" 2>/dev/null || missing="$missing python-modules"
+          if [ -n "$missing" ]; then
+            echo "::error::Runner is missing required tools:$missing. Install python3, python3-venv, ffmpeg, yt-dlp, and boto3 on the self-hosted runner."
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install yt-dlp boto3 requests
+
+      - name: Download YouTube video
+        id: download
+        shell: bash
+        env:
+          SOURCE_URL: ${{ github.event.client_payload.source_url || inputs.source_url || '' }}
+          JOB_ID: ${{ github.event.client_payload.job_id || github.event.inputs.job_id }}
+        run: |
+          python - <<'PY'
+          import os
+          import glob
+          import subprocess
+          import sys
+
+          url = os.environ['SOURCE_URL']
+          job_id = os.environ['JOB_ID']
+          temp = os.environ.get('RUNNER_TEMP') or os.environ.get('TEMP') or '/tmp'
+          out_tmpl = os.path.join(temp, f'yt_source_{job_id}.%(ext)s')
+
+          # Single-file mp4 only: no ffmpeg merge required on the Linux runner.
+          cmd = [
+              sys.executable, '-m', 'yt_dlp',
+              '-f', 'best[ext=mp4]/best',
+              '--no-playlist',
+              '-o', out_tmpl,
+              url,
+          ]
+          print('Downloading YouTube source...')
+          try:
+              subprocess.run(cmd, check=True)
+          except subprocess.CalledProcessError:
+              # Clean up any partial downloads on failure.
+              for path in glob.glob(os.path.join(temp, f'yt_source_{job_id}.*')):
+                  try:
+                      os.unlink(path)
+                  except OSError:
+                      pass
+              raise
+
+          matches = glob.glob(os.path.join(temp, f'yt_source_{job_id}.*'))
+          if not matches:
+              raise SystemExit('YouTube download produced no file')
+          video = matches[0]
+          print(f'Downloaded {os.path.getsize(video)} bytes to {video}')
+          if os.path.getsize(video) == 0:
+              os.unlink(video)
+              raise RuntimeError('Downloaded file is empty')
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f'video_path={video}\n')
+          PY
+
+      - name: Upload source to R2
+        id: upload
+        shell: bash
+        env:
+          JOB_ID: ${{ github.event.client_payload.job_id || github.event.inputs.job_id }}
+          OBJECT_KEY: ${{ github.event.client_payload.object_key || inputs.object_key || '' }}
+          VIDEO_PATH: ${{ steps.download.outputs.video_path }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: telegram-video-clipper-uploads
+        run: |
+          python - <<'PY'
+          import os
+          import boto3
+          from botocore.config import Config
+
+          job_id = os.environ['JOB_ID']
+          video_path = os.environ['VIDEO_PATH']
+          object_key = os.environ.get('OBJECT_KEY') or ''
+          key = object_key or f'jobs/{job_id}/source.mp4'
+
+          s3 = boto3.client(
+              's3',
+              endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+              aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
+              aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
+              config=Config(signature_version='s3v4'),
+              region_name='auto',
+          )
+          try:
+              s3.upload_file(video_path, os.environ['R2_BUCKET'], key)
+              print(f'Uploaded {video_path} to {key}')
+
+              # Verify the upload by comparing object size with the local file.
+              head = s3.head_object(Bucket=os.environ['R2_BUCKET'], Key=key)
+              if head.get('ContentLength', 0) != os.path.getsize(video_path):
+                  raise RuntimeError('R2 source verification failed: uploaded size mismatch')
+          finally:
+              # Always remove the temporary source file, even on failure.
+              try:
+                  os.unlink(video_path)
+              except OSError:
+                  pass
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f'source_r2_key={key}\n')
+          PY
+
+  process:
+    name: Process video and upload clips
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Always runs so non-YouTube jobs (where extract-youtube is skipped) still
+    # process, and YouTube jobs whose extraction failed still report failure.
+    needs: [extract-youtube]
+    if: always()
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check dispatch payload
+        id: validate
+        env:
+          JOB_ID: ${{ github.event.client_payload.job_id || github.event.inputs.job_id }}
+          UPLOAD_ID: ${{ github.event.client_payload.upload_id || github.event.inputs.upload_id }}
+          OBJECT_KEY: ${{ github.event.client_payload.object_key || inputs.object_key || '' }}
+          SOURCE_URL: ${{ github.event.client_payload.source_url || inputs.source_url || '' }}
+        run: |
+          echo "event=${{ github.event_name }} job_id=${JOB_ID} upload_id=${UPLOAD_ID}"
+          if [ -z "$JOB_ID" ] || [ -z "$UPLOAD_ID" ]; then
+            echo "::error::Missing job_id/upload_id in client_payload or workflow_dispatch inputs."
             exit 1
           fi
 
@@ -67,8 +235,9 @@ jobs:
           pip install requests boto3
 
       - name: Report job started
+        shell: bash
         env:
-          JOB_ID: ${{ github.event.client_payload.job_id }}
+          JOB_ID: ${{ github.event.client_payload.job_id || github.event.inputs.job_id }}
         run: |
           python - <<'PY'
           import os
@@ -88,29 +257,30 @@ jobs:
           response.raise_for_status()
           PY
 
+      - name: Fail workflow when YouTube extraction failed
+        if: ${{ always() && !contains(fromJSON('["success","skipped"]'), needs.extract-youtube.result) }}
+        shell: bash
+        run: |
+          echo "::error::YouTube extraction did not succeed (result: ${{ needs.extract-youtube.result }}); clipping was not started."
+          exit 1
+
       - name: Download video via Worker presigned URL
         id: download
+        if: ${{ needs.extract-youtube.outputs.source_r2_key == '' }}
+        shell: bash
         env:
-          JOB_ID: ${{ github.event.client_payload.job_id }}
-          SOURCE_URL: ${{ github.event.client_payload.source_url }}
+          JOB_ID: ${{ github.event.client_payload.job_id || github.event.inputs.job_id }}
+          SOURCE_URL: ${{ github.event.client_payload.source_url || '' }}
+          SOURCE_VIDEO: /tmp/video_${{ github.run_id }}.mp4
         run: |
           python - <<'PY'
           import os
           import requests
 
-          source_url = os.environ.get('SOURCE_URL', '').strip()
-          if source_url:
-              # Chopify's yt-dlp ingestion handles YouTube URLs directly. Do not
-              # log the URL; it may be an unlisted link.
-              with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
-                  out.write(f'video_path={source_url}\n')
-              print('Using YouTube URL as source (URL redacted).')
-              raise SystemExit(0)
-
           job_id = os.environ['JOB_ID']
           worker_url = os.environ['WORKER_URL']
           worker_secret = os.environ['WORKER_SECRET']
-          local_path = f'/tmp/video_{os.environ["GITHUB_RUN_ID"]}.mp4'
+          local_path = os.environ['SOURCE_VIDEO']
 
           # Fetch short-lived presigned download URL from Worker
           resp = requests.get(
@@ -139,10 +309,52 @@ jobs:
               out.write(f'video_path={local_path}\n')
           PY
 
+      - name: Fetch YouTube source from R2
+        id: fetch-source
+        if: ${{ needs.extract-youtube.outputs.source_r2_key != '' }}
+        shell: bash
+        env:
+          JOB_ID: ${{ github.event.client_payload.job_id || github.event.inputs.job_id }}
+          SOURCE_R2_KEY: ${{ needs.extract-youtube.outputs.source_r2_key }}
+          SOURCE_VIDEO: /tmp/video_${{ github.run_id }}.mp4
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: telegram-video-clipper-uploads
+        run: |
+          python - <<'PY'
+          import os
+          import boto3
+          from botocore.config import Config
+
+          job_id = os.environ['JOB_ID']
+          key = os.environ['SOURCE_R2_KEY']
+          local_path = os.environ['SOURCE_VIDEO']
+
+          s3 = boto3.client(
+              's3',
+              endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+              aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
+              aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
+              config=Config(signature_version='s3v4', connect_timeout=20, read_timeout=120),
+              region_name='auto',
+          )
+          print(f'Downloading source {key} from R2...')
+          s3.download_file(os.environ['R2_BUCKET'], key, local_path)
+          size = os.path.getsize(local_path)
+          print(f'Downloaded {size} bytes to {local_path}')
+          if size == 0:
+              raise RuntimeError('Downloaded file is empty')
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f'video_path={local_path}\n')
+          PY
+
       - name: Get job preferences
         id: prefs
+        shell: bash
         env:
-          JOB_ID: ${{ github.event.client_payload.job_id }}
+          JOB_ID: ${{ github.event.client_payload.job_id || github.event.inputs.job_id }}
         run: |
           python - <<'PY'
           import os
@@ -168,13 +380,14 @@ jobs:
 
       - name: Run Chopify processing
         id: chopify
+        shell: bash
         env:
-          VIDEO_PATH: ${{ steps.download.outputs.video_path }}
+          VIDEO_PATH: ${{ env.SOURCE_VIDEO }}
           ASPECT_RATIO: ${{ steps.prefs.outputs.aspect_ratio }}
           STYLE: ${{ steps.prefs.outputs.style }}
           ENABLE_TIGHTEN: ${{ steps.prefs.outputs.enable_tighten }}
           ENABLE_LOUDNORM: ${{ steps.prefs.outputs.enable_loudnorm }}
-          JOB_ID: ${{ github.event.client_payload.job_id }}
+          JOB_ID: ${{ github.event.client_payload.job_id || github.event.inputs.job_id }}
         run: |
           python - <<'PY'
           import os
@@ -233,8 +446,9 @@ jobs:
 
       - name: Upload clips to R2
         id: upload
+        shell: bash
         env:
-          JOB_ID: ${{ github.event.client_payload.job_id }}
+          JOB_ID: ${{ github.event.client_payload.job_id || github.event.inputs.job_id }}
           CLIPS_JSON: ${{ steps.chopify.outputs.clips }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -304,8 +518,9 @@ jobs:
 
       - name: Report completion to Worker
         if: always()
+        shell: bash
         env:
-          JOB_ID: ${{ github.event.client_payload.job_id }}
+          JOB_ID: ${{ github.event.client_payload.job_id || github.event.inputs.job_id }}
           CLIPS_JSON: ${{ steps.upload.outputs.uploaded }}
           CHOPIFY_OUTCOME: ${{ steps.chopify.outcome }}
           UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
