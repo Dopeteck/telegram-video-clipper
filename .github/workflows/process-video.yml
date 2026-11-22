@@ -107,7 +107,7 @@ jobs:
           import subprocess
 
           deno_output = subprocess.check_output(["deno", "--version"], text=True)
-          match = re.search(r"deno (\\d+)\\.(\\d+)\\.(\\d+)", deno_output)
+          match = re.search(r"deno (\d+)\\.(\d+)\\.(\d+)", deno_output)
           if not match or tuple(map(int, match.groups())) < (2, 3, 0):
               raise SystemExit("Deno >= 2.3.0 is required by yt-dlp EJS.")
           for package in ("yt-dlp", "yt-dlp-ejs"):
