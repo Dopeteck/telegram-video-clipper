@@ -37,6 +37,12 @@ jobs:
     runs-on: [self-hosted, windows, x64, youtube-extractor]
     timeout-minutes: 90
     steps:
+      - name: Allow Python setup scripts for this runner account
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy Bypass -Force
+          Get-ExecutionPolicy -List
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -246,6 +252,7 @@ jobs:
           PY
 
       - name: Get job preferences
+        if: ${{ needs.extract-youtube.result != 'failure' }}
         id: prefs
         env:
           JOB_ID: ${{ github.event.client_payload.job_id || inputs.job_id }}
@@ -273,6 +280,7 @@ jobs:
           PY
 
       - name: Run Chopify processing
+        if: ${{ needs.extract-youtube.result != 'failure' }}
         id: chopify
         env:
           VIDEO_PATH: ${{ steps.download.outputs.video_path }}
