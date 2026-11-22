@@ -29,7 +29,124 @@ env:
 # reject any log line that is not `key=value` with "Invalid format".)
 
 jobs:
+  # YouTube's player API often rejects hosted CI egress. Download only on the
+  # owner's trusted Windows runner, then place the source in the existing R2
+  # object already associated with this job. No video processing happens here.
+  extract-youtube:
+    if: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.source_url != '' }}
+    runs-on: [self-hosted, windows, x64, youtube-extractor]
+    timeout-minutes: 90
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install downloader dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade --pre "yt-dlp[default]" boto3
+          if (-not (Get-Command deno -ErrorAction SilentlyContinue)) {
+            irm https://deno.land/install.ps1 | iex
+            $denoBin = Join-Path (Join-Path $HOME ".deno") "bin"
+            if (Test-Path $denoBin) {
+              $env:PATH = "$denoBin;$env:PATH"
+              Add-Content -Path $env:GITHUB_PATH -Value $denoBin
+            }
+          }
+          if (-not (Get-Command deno -ErrorAction SilentlyContinue)) {
+            Write-Error "Deno installation failed. Install Deno for the runner account and retry."
+          }
+          python -m yt_dlp --version
+          deno --version
+
+      - name: Download YouTube source and upload it to its existing R2 object
+        shell: pwsh
+        env:
+          SOURCE_URL: ${{ github.event.client_payload.source_url }}
+          OBJECT_KEY: ${{ github.event.client_payload.object_key }}
+          YTDLP_COOKIES_B64: ${{ secrets.YTDLP_COOKIES_B64 }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: telegram-video-clipper-uploads
+        run: |
+          @'
+          import base64
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+          import boto3
+          from botocore.config import Config
+
+          required = ("SOURCE_URL", "OBJECT_KEY", "YTDLP_COOKIES_B64",
+                      "R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY")
+          missing = [name for name in required if not os.environ.get(name)]
+          if missing:
+              raise SystemExit("Missing required extraction configuration: " + ", ".join(missing))
+
+          temp = Path(os.environ["RUNNER_TEMP"])
+          cookies = temp / "youtube-cookies.txt"
+          output_template = str(temp / "youtube-source.%(ext)s")
+          try:
+              raw = base64.b64decode("".join(os.environ["YTDLP_COOKIES_B64"].split()), validate=True)
+              decoded = raw.decode("utf-8-sig")
+              if not any(len(line.split("\t")) == 7 for line in decoded.splitlines()
+                         if (line.strip() and not line.startswith("#")) or line.startswith("#HttpOnly_")):
+                  raise ValueError("not a Netscape cookies file")
+              cookies.write_bytes(raw)
+          except Exception as exc:
+              raise SystemExit("YouTube cookies secret is invalid (" + type(exc).__name__ + ").")
+
+          command = [
+              sys.executable, "-m", "yt_dlp",
+              "--no-playlist", "--no-progress", "--quiet",
+              "--cookies", str(cookies),
+              "-f", "bv*[height<=1080]+ba/b[height<=1080]",
+              "--merge-output-format", "mp4",
+              "-o", output_template,
+              os.environ["SOURCE_URL"],
+          ]
+          try:
+              result = subprocess.run(command, capture_output=True, text=True, timeout=75 * 60)
+              if result.returncode:
+                  # Never print yt-dlp output: it can contain the private source URL.
+                  raise RuntimeError("yt-dlp exited with code " + str(result.returncode))
+              candidates = [p for p in temp.glob("youtube-source.*")
+                            if p.is_file() and p.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}]
+              if not candidates:
+                  raise RuntimeError("yt-dlp completed without producing a video file")
+              source = max(candidates, key=lambda p: p.stat().st_size)
+              if source.stat().st_size < 1024 * 1024:
+                  raise RuntimeError("Downloaded source is unexpectedly small")
+
+              client = boto3.client(
+                  "s3",
+                  endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+                  aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+                  aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+                  region_name="auto",
+                  config=Config(signature_version="s3v4", connect_timeout=20, read_timeout=300,
+                                retries={"mode": "standard", "total_max_attempts": 4}),
+              )
+              client.upload_file(str(source), os.environ["R2_BUCKET"], os.environ["OBJECT_KEY"],
+                                 ExtraArgs={"ContentType": {".mp4": "video/mp4", ".mkv": "video/x-matroska", ".webm": "video/webm", ".mov": "video/quicktime"}.get(source.suffix.lower(), "application/octet-stream")})
+              head = client.head_object(Bucket=os.environ["R2_BUCKET"], Key=os.environ["OBJECT_KEY"])
+              if head.get("ContentLength", 0) != source.stat().st_size:
+                  raise RuntimeError("R2 source verification failed: uploaded size mismatch")
+              print(f"YouTube source downloaded and verified in R2 ({source.stat().st_size} bytes).")
+          finally:
+              cookies.unlink(missing_ok=True)
+              for path in temp.glob("youtube-source.*"):
+                  path.unlink(missing_ok=True)
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
   process:
+    needs: [extract-youtube]
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -38,14 +155,12 @@ jobs:
 
       - name: Check dispatch payload
         env:
-          JOB_ID: ${{ github.event.client_payload.job_id }}
-          UPLOAD_ID: ${{ github.event.client_payload.upload_id }}
-          OBJECT_KEY: ${{ github.event.client_payload.object_key }}
-          SOURCE_URL: ${{ github.event.client_payload.source_url }}
+          JOB_ID: ${{ github.event.client_payload.job_id || inputs.job_id }}
+          UPLOAD_ID: ${{ github.event.client_payload.upload_id || inputs.upload_id }}
         run: |
           echo "event=${{ github.event_name }} job_id=${JOB_ID} upload_id=${UPLOAD_ID}"
-          if [ -z "$JOB_ID" ] || [ -z "$UPLOAD_ID" ] || { [ -z "$OBJECT_KEY" ] && [ -z "$SOURCE_URL" ]; }; then
-            echo "::error::Missing job_id/upload_id and source reference in client_payload."
+          if [ -z "$JOB_ID" ] || [ -z "$UPLOAD_ID" ]; then
+            echo "::error::Missing job_id or upload_id in workflow dispatch payload."
             exit 1
           fi
 
@@ -60,111 +175,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-liberation fonts-noto-cjk nodejs npm
 
-      - name: Install Deno
-        run: |
-          curl -fsSL https://deno.land/x/install/install.sh | DENO_INSTALL=/tmp/deno_install sh
-          echo "/tmp/deno_install/bin" >> $GITHUB_PATH
-          export PATH="/tmp/deno_install/bin:$PATH"
-          test -x /tmp/deno_install/bin/deno
-          deno --version
-
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
           pip install requests boto3
 
-      - name: Install PO Token Provider
-        run: |
-          # Clone the bgutil-ytdlp-pot-provider server for PO token generation
-          git clone --depth 1 --branch 2.0.2 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /tmp/bgutil-pot-provider
-          cd /tmp/bgutil-pot-provider/server
-          npm ci
-          npx tsc
-
-      - name: Start PO Token Provider server
-        run: |
-          nohup node /tmp/bgutil-pot-provider/server/build/main.js > /tmp/bgutil-pot-provider.log 2>&1 &
-          echo $! > /tmp/bgutil-pot-provider.pid
-          # Wait for server to be ready
-          for i in $(seq 1 30); do
-            if curl -s http://127.0.0.1:4416/ > /dev/null 2>&1; then
-              echo "PO Token Provider server is ready."
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "::error::PO Token Provider server failed to start."
-          cat /tmp/bgutil-pot-provider.log
-          exit 1
-        env:
-          YTDLP_POT_PROVIDER_URL: http://127.0.0.1:4416
-
-      - name: Verify yt-dlp and Deno availability
-        env:
-          YTDLP_POT_PROVIDER_URL: http://127.0.0.1:4416
-        run: |
-          echo "=== Deno version ==="
-          deno --version
-          echo "=== yt-dlp version ==="
-          python -m yt_dlp --version
-          echo "=== bgutil PO Token Provider package ==="
-          python -m pip show bgutil-ytdlp-pot-provider
-
-      - name: Configure YouTube authentication cookies
-        env:
-          SOURCE_URL: ${{ github.event.client_payload.source_url }}
-          YTDLP_COOKIES_B64: ${{ secrets.YTDLP_COOKIES_B64 }}
-        run: |
-          python - <<'PY'
-          import base64
-          import os
-          from pathlib import Path
-          from urllib.parse import urlparse
-
-          source_url = os.environ.get("SOURCE_URL", "").strip()
-          host = (urlparse(source_url).hostname or "").lower()
-          youtube_hosts = {"youtube.com", "www.youtube.com", "m.youtube.com",
-                           "music.youtube.com", "youtu.be", "youtube-nocookie.com"}
-          if host not in youtube_hosts and not host.endswith(".youtube.com"):
-              print("Source is not YouTube; cookie setup is not required.")
-              raise SystemExit(0)
-
-          encoded = os.environ.get("YTDLP_COOKIES_B64", "").strip()
-          if not encoded:
-              raise SystemExit(
-                  "::error::YouTube source requires the YTDLP_COOKIES_B64 "
-                  "repository Actions secret. Add the Base64-encoded Netscape "
-                  "cookies.txt as a repository secret (not an Environment secret)."
-              )
-
-          try:
-              raw = base64.b64decode("".join(encoded.split()), validate=True)
-              text = raw.decode("utf-8-sig")
-          except Exception as exc:
-              raise SystemExit(f"::error::YTDLP_COOKIES_B64 is not valid Base64 UTF-8: {type(exc).__name__}")
-
-          cookie_rows = [
-              line for line in text.splitlines()
-              if (line.strip() and not line.startswith("#")) or line.startswith("#HttpOnly_")
-          ]
-          if not any(len(line.split("\t")) == 7 for line in cookie_rows):
-              raise SystemExit(
-                  "::error::Decoded YTDLP_COOKIES_B64 is not a valid Netscape "
-                  "cookies.txt file (no seven-column cookie records found)."
-              )
-
-          cookie_path = Path("/tmp/youtube_cookies.txt")
-          cookie_path.write_bytes(raw)
-          cookie_path.chmod(0o600)
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
-              env.write(f"YTDLP_COOKIES_FILE={cookie_path}\n")
-          print("YouTube authentication cookies configured for yt-dlp.")
-          PY
-
       - name: Report job started
         env:
-          JOB_ID: ${{ github.event.client_payload.job_id }}
+          JOB_ID: ${{ github.event.client_payload.job_id || inputs.job_id }}
         run: |
           python - <<'PY'
           import os
@@ -186,51 +205,42 @@ jobs:
 
       - name: Download video via Worker presigned URL
         id: download
+        if: ${{ needs.extract-youtube.result != 'failure' }}
         env:
-          JOB_ID: ${{ github.event.client_payload.job_id }}
-          SOURCE_URL: ${{ github.event.client_payload.source_url }}
+          JOB_ID: ${{ github.event.client_payload.job_id || inputs.job_id }}
         run: |
           python - <<'PY'
           import os
           import requests
-
-          source_url = os.environ.get('SOURCE_URL', '').strip()
-          if source_url:
-              # Chopify's yt-dlp ingestion handles YouTube URLs directly. Do not
-              # log the URL; it may be an unlisted link.
-              with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
-                  out.write(f'video_path={source_url}\n')
-              print('Using YouTube URL as source (URL redacted).')
-              raise SystemExit(0)
 
           job_id = os.environ['JOB_ID']
           worker_url = os.environ['WORKER_URL']
           worker_secret = os.environ['WORKER_SECRET']
           local_path = f'/tmp/video_{os.environ["GITHUB_RUN_ID"]}.mp4'
 
-          # Fetch short-lived presigned download URL from Worker
+          # For YouTube imports, the Windows extraction job has already placed
+          # the source at the upload's existing R2 object key. For normal uploads,
+          # this is the same presigned download path used previously.
           resp = requests.get(
               f'{worker_url}/api/internal/jobs/{job_id}/download-url',
               headers={'Authorization': f'Bearer {worker_secret}'},
               timeout=30,
           )
           resp.raise_for_status()
-          data = resp.json()['data']
-          download_url = data['url']
+          download_url = resp.json()['data']['url']
 
-          # Download video via HTTP streaming (presigned URL never logged)
-          print(f'Downloading video from Worker presigned URL...')
-          with requests.get(download_url, stream=True, timeout=300) as r:
+          print('Downloading source from private R2 storage (URL redacted)...')
+          with requests.get(download_url, stream=True, timeout=600) as r:
               r.raise_for_status()
               with open(local_path, 'wb') as f:
-                  for chunk in r.iter_content(chunk_size=8192):
-                      f.write(chunk)
+                  for chunk in r.iter_content(chunk_size=1024 * 1024):
+                      if chunk:
+                          f.write(chunk)
 
           size = os.path.getsize(local_path)
-          print(f'Downloaded {size} bytes to {local_path}')
           if size == 0:
-              raise RuntimeError('Downloaded file is empty')
-
+              raise RuntimeError('Downloaded source file is empty')
+          print(f'Downloaded {size} bytes from private R2 storage.')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
               out.write(f'video_path={local_path}\n')
           PY
@@ -238,7 +248,7 @@ jobs:
       - name: Get job preferences
         id: prefs
         env:
-          JOB_ID: ${{ github.event.client_payload.job_id }}
+          JOB_ID: ${{ github.event.client_payload.job_id || inputs.job_id }}
         run: |
           python - <<'PY'
           import os
@@ -270,8 +280,7 @@ jobs:
           STYLE: ${{ steps.prefs.outputs.style }}
           ENABLE_TIGHTEN: ${{ steps.prefs.outputs.enable_tighten }}
           ENABLE_LOUDNORM: ${{ steps.prefs.outputs.enable_loudnorm }}
-          JOB_ID: ${{ github.event.client_payload.job_id }}
-          YTDLP_POT_PROVIDER_URL: http://127.0.0.1:4416
+          JOB_ID: ${{ github.event.client_payload.job_id || inputs.job_id }}
         run: |
           python - <<'PY'
           import os
@@ -331,7 +340,7 @@ jobs:
       - name: Upload clips to R2
         id: upload
         env:
-          JOB_ID: ${{ github.event.client_payload.job_id }}
+          JOB_ID: ${{ github.event.client_payload.job_id || inputs.job_id }}
           CLIPS_JSON: ${{ steps.chopify.outputs.clips }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -402,7 +411,7 @@ jobs:
       - name: Report completion to Worker
         if: always()
         env:
-          JOB_ID: ${{ github.event.client_payload.job_id }}
+          JOB_ID: ${{ github.event.client_payload.job_id || inputs.job_id }}
           CLIPS_JSON: ${{ steps.upload.outputs.uploaded }}
           CHOPIFY_OUTCOME: ${{ steps.chopify.outcome }}
           UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
