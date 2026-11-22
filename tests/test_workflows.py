@@ -248,3 +248,34 @@ def test_extract_result_is_available_to_completion_report():
     # The completion report runs with if: always() and will surface the failure
     # captured by the fail step above.
     assert report["if"] == "always()"
+
+
+def test_chopify_receives_video_path_from_download_step_outputs():
+    step = next(s for s in _steps() if s["name"] == "Run Chopify processing")
+    env = step.get("env", {})
+    assert env["VIDEO_PATH"] == "${{ steps.download.outputs.video_path || steps.fetch-source.outputs.video_path }}"
+
+
+def test_extract_job_if_matches_youtube_and_youtu_be_urls():
+    cond = _extract()["if"]
+    assert "youtube.com" in cond
+    assert "youtu.be" in cond
+
+
+def test_download_steps_are_mutually_exclusive():
+    download = next(s for s in _steps() if s["name"] == "Download video via Worker presigned URL")
+    fetch = next(s for s in _steps() if s["name"] == "Fetch YouTube source from R2")
+    assert "source_r2_key == ''" in download["if"]
+    assert "source_r2_key != ''" in fetch["if"]
+
+
+def test_failed_download_step_reported_in_completion():
+    steps = _steps()
+    fail = next(s for s in steps if s["name"].startswith("Fail workflow when YouTube extraction"))
+    # The fail step must run before any download step so a failed extraction
+    # never reaches Chopify with a missing source.
+    fail_index = next(i for i, s in enumerate(steps) if s["name"].startswith("Fail workflow when YouTube extraction"))
+    download_index = next(i for i, s in enumerate(steps) if s["name"] == "Download video via Worker presigned URL")
+    assert fail_index < download_index
+    report = next(s for s in steps if s["name"] == "Report completion to Worker")
+    assert report["if"] == "always()"

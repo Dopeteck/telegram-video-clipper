@@ -43,7 +43,7 @@ jobs:
     timeout-minutes: 30
     # Only YouTube sources are extracted here. Non-YouTube sources are downloaded
     # directly by the `process` job from a Worker presigned URL.
-    if: ${{ (github.event_name == 'repository_dispatch' && contains(github.event.client_payload.source_url || '', 'youtube.com')) || (github.event_name == 'workflow_dispatch' && contains(inputs.source_url || '', 'youtube.com')) }}
+    if: ${{ (github.event_name == 'repository_dispatch' && (contains(github.event.client_payload.source_url || '', 'youtube.com') || contains(github.event.client_payload.source_url || '', 'youtu.be'))) || (github.event_name == 'workflow_dispatch' && (contains(inputs.source_url || '', 'youtube.com') || contains(inputs.source_url || '', 'youtu.be'))) }}
     outputs:
       source_r2_key: ${{ steps.upload.outputs.source_r2_key }}
     steps:
@@ -382,7 +382,7 @@ jobs:
         id: chopify
         shell: bash
         env:
-          VIDEO_PATH: ${{ env.SOURCE_VIDEO }}
+          VIDEO_PATH: ${{ steps.download.outputs.video_path || steps.fetch-source.outputs.video_path }}
           ASPECT_RATIO: ${{ steps.prefs.outputs.aspect_ratio }}
           STYLE: ${{ steps.prefs.outputs.style }}
           ENABLE_TIGHTEN: ${{ steps.prefs.outputs.enable_tighten }}
