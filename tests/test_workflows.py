@@ -294,3 +294,16 @@ def test_failed_download_step_reported_in_completion():
     assert fail_index < download_index
     report = next(s for s in steps if s["name"] == "Report completion to Worker")
     assert report["if"] == "always()"
+
+def test_extract_ytdlp_runtime_is_explicit_and_verified():
+    steps = _extract_steps()
+    deno = next(s for s in steps if s["name"] == "Set up Deno (JavaScript runtime yt-dlp needs for YouTube)")
+    assert deno["uses"] == "denoland/setup-deno@v2"
+    install = next(s for s in steps if s["name"] == "Install Python dependencies")
+    run = install["run"]
+    assert '"yt-dlp[default]"' in run
+    assert "yt-dlp-ejs" in run
+    assert "command -v deno" in run
+    assert "2, 3, 0" in run
+    download = next(s for s in steps if s["name"] == "Download YouTube video")["run"]
+    assert "'--js-runtimes', 'deno'" in download
