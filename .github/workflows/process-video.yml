@@ -91,10 +91,28 @@ jobs:
           deno-version: v2.x
 
       - name: Install Python dependencies
+        shell: bash
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
-          pip install --upgrade "yt-dlp[default]" boto3 requests
+          python -m pip install --upgrade "yt-dlp[default]" boto3 requests
+          echo "Deno runtime:"
+          command -v deno
           deno --version
+          echo "yt-dlp and EJS package versions:"
+          python -m pip show yt-dlp yt-dlp-ejs
+          python - <<'PY'
+          import importlib.metadata
+          import re
+          import subprocess
+
+          deno_output = subprocess.check_output(["deno", "--version"], text=True)
+          match = re.search(r"deno (\\d+)\\.(\\d+)\\.(\\d+)", deno_output)
+          if not match or tuple(map(int, match.groups())) < (2, 3, 0):
+              raise SystemExit("Deno >= 2.3.0 is required by yt-dlp EJS.")
+          for package in ("yt-dlp", "yt-dlp-ejs"):
+              print(f"{package}=={importlib.metadata.version(package)}")
+          PY
 
       - name: Download YouTube video
         id: download
@@ -128,6 +146,7 @@ jobs:
           # Up to 1080p video + audio merged into one mp4 (ffmpeg is a runner prerequisite).
           cmd = [
               sys.executable, '-m', 'yt_dlp',
+              '--js-runtimes', 'deno',
               '-f', 'bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b',
               '--merge-output-format', 'mp4',
               '--no-playlist',
