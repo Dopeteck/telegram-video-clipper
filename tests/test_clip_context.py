@@ -110,3 +110,17 @@ def test_context_growth_respects_three_minute_hard_ceiling():
     a, b = window
     assert items[b]["end"] - items[a]["start"] <= 180
     assert b == 8
+
+
+def test_adjacent_complete_sentences_stay_together_until_story_payoff():
+    items = [
+        group("The company had one problem with its payment system.", 0, 20, complete=True),
+        group("And then customers started reporting the same failure.", 20.2, 40.2, complete=True),
+        group("Because the payment system kept rejecting valid cards.", 40.4, 60.4, complete=True),
+        group("And the support team could not explain what was happening.", 60.6, 80.6, complete=True),
+        group("So the founder finally traced it to one small configuration.", 80.8, 100.8, complete=True),
+        group("And that was the change that fixed the entire problem.", 101.0, 121.0, complete=True),
+    ]
+    window = grow(items, 0, min_len=60, max_len=180)
+    assert window == (0, 5)
+    assert items[window[1]]["end"] - items[window[0]]["start"] >= 120
