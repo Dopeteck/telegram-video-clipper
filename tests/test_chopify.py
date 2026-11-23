@@ -219,7 +219,7 @@ class TestRun:
     def test_bom_transcript_accepted(self, workdir):
         raw = (workdir / "transcript.json").read_bytes()
         (workdir / "transcript.json").write_bytes(b"\xef\xbb\xbf" + raw)
-        segs, _ = score_clips.run(workdir, min_score=0)
+        segs, _ = score_clips.run(workdir, min_score=0, min_len=20, max_len=50)
         assert len(segs) >= 1
 
     def test_sparse_asr_fails_gracefully_with_compact_diagnostics(self, workdir, capsys):
