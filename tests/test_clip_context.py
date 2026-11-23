@@ -101,10 +101,12 @@ def test_context_first_window_can_grow_to_a_two_minute_thought():
 def test_context_growth_respects_three_minute_hard_ceiling():
     items = [
         group(f"Part {i} continues the explanation and", i * 20, i * 20 + 19, complete=False)
-        for i in range(10)
+        for i in range(8)
     ]
-    items.append(group("That is the complete conclusion.", 200, 220, complete=True))
+    items.append(group("That is the complete conclusion.", 160, 179, complete=True))
+    items.append(group("A separate point begins here.", 180, 199, complete=True))
     window = grow(items, 0, min_len=60, max_len=180)
     assert window is not None
     a, b = window
     assert items[b]["end"] - items[a]["start"] <= 180
+    assert b == 8
