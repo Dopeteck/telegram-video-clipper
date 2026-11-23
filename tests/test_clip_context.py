@@ -82,3 +82,29 @@ def test_tight_continuation_with_and_is_kept():
         group("And then the whole room erupted.", 2.2, 5.2),
     ]
     assert grow(items, 0, min_len=2.5) == (0, 1)
+
+
+def test_context_first_window_can_grow_to_a_two_minute_thought():
+    items = [
+        group("The point started with an important detail and", 0, 20, complete=False),
+        group("then the speaker explained why it mattered and", 20.2, 40.2, complete=False),
+        group("gave the example that made the situation clear and", 40.4, 60.4, complete=False),
+        group("continued with the consequence nobody had considered and", 60.6, 80.6, complete=False),
+        group("explained how the decision affected everyone and", 80.8, 100.8, complete=False),
+        group("finally showed why the whole story mattered.", 101.0, 121.0, complete=True),
+    ]
+    window = grow(items, 0, min_len=60, max_len=180)
+    assert window == (0, 5)
+    assert items[window[1]]["end"] - items[window[0]]["start"] >= 120
+
+
+def test_context_growth_respects_three_minute_hard_ceiling():
+    items = [
+        group(f"Part {i} continues the explanation and", i * 20, i * 20 + 19, complete=False)
+        for i in range(10)
+    ]
+    items.append(group("That is the complete conclusion.", 200, 220, complete=True))
+    window = grow(items, 0, min_len=60, max_len=180)
+    assert window is not None
+    a, b = window
+    assert items[b]["end"] - items[a]["start"] <= 180
