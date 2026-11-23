@@ -84,6 +84,15 @@ def test_tight_continuation_with_and_is_kept():
     assert grow(items, 0, min_len=2.5) == (0, 1)
 
 
+
+def test_short_complete_moment_is_not_padded_with_unrelated_speech():
+    items = [
+        group("The founder explains the exact mistake that nearly ruined the business.", 0, 40),
+        group("Meanwhile the weather forecast predicts heavy rain tomorrow.", 40.2, 60.2),
+    ]
+    assert grow(items, 0, min_len=60, max_len=180) == (0, 0)
+
+
 def test_context_first_window_can_grow_to_a_two_minute_thought():
     items = [
         group("The point started with an important detail and", 0, 20, complete=False),
