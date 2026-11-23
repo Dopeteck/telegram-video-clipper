@@ -395,14 +395,6 @@ def _creator_value_score(text):
 DEPENDENT_OPENERS = {
     "and", "but", "because", "so", "although", "though", "while",
 }
-INCOMPLETE_TAILS = {
-    "a", "an", "the", "and", "but", "or", "because", "if", "when",
-    "while", "although", "that", "which", "who", "whose", "to", "for",
-    "of", "with", "from", "at", "in", "on", "by", "as", "than", "so",
-    "is", "are", "was", "were", "am", "be", "been", "being", "have",
-    "has", "had", "do", "does", "did", "can", "could", "will", "would",
-    "should", "might", "must",
-}
 MAX_CONTEXT_GROUPS = 2
 MAX_CONTEXT_SECONDS = 12.0
 MAX_ANSWER_GAP = 3.0
