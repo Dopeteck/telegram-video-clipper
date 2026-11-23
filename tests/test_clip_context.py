@@ -106,7 +106,7 @@ def test_context_growth_respects_three_minute_hard_ceiling():
             for i in range(1, 8)
         ],
     ]
-    items.append(group("That is the complete conclusion.", 160, 179, complete=True))
+    items.append(group("And that is the complete conclusion.", 160, 179, complete=True))
     items.append(group("A separate point begins here.", 180, 199, complete=True))
     window = grow(items, 0, min_len=60, max_len=180)
     assert window is not None
