@@ -484,11 +484,12 @@ def _grow_window(sentences, seed, taken, min_len, max_len, av_features=None):
         context_count += 1
 
     # Do not begin on a dependent fragment if no safe context was available.
-    if not _group_complete(sentences[a]) or _opens_dependent(sentences[a].get("text", "")):
+    # An unpunctuated opening clause may still be completed by the next group.
+    if _opens_dependent(sentences[a].get("text", "")):
         return None
     if span(a, seed) > max_len:
         a = seed
-        if not _group_complete(sentences[a]) or _opens_dependent(sentences[a].get("text", "")):
+        if _opens_dependent(sentences[a].get("text", "")):
             return None
 
     j = seed
@@ -540,7 +541,7 @@ def _grow_window(sentences, seed, taken, min_len, max_len, av_features=None):
         return None
 
     # A clip that opens on a dependent sentence is still incomplete.
-    if _opens_dependent(sentences[a].get("text", "")) or not _group_complete(sentences[a]):
+    if _opens_dependent(sentences[a].get("text", "")):
         return None
     duration = span(a, j)
     if duration < min_len * 0.6 or duration > max_len:
