@@ -394,8 +394,7 @@ def _creator_value_score(text):
 
 DEPENDENT_OPENERS = {
     "and", "but", "because", "so", "although", "though", "while",
-    "this", "that", "these", "those", "it", "they", "he", "she",
-    "we", "which", "who", "where", "when",
+    "which", "who", "where", "when",
 }
 INCOMPLETE_TAILS = {
     "a", "an", "the", "and", "but", "or", "because", "if", "when",
