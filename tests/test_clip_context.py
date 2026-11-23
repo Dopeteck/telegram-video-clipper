@@ -100,8 +100,11 @@ def test_context_first_window_can_grow_to_a_two_minute_thought():
 
 def test_context_growth_respects_three_minute_hard_ceiling():
     items = [
-        group(f"And then the speaker explains part {i} of the same story", i * 20, i * 20 + 19, complete=False)
-        for i in range(8)
+        group("The speaker begins explaining the story.", 0, 19, complete=True),
+        *[
+            group(f"And then the speaker explains part {i} of the same story", i * 20, i * 20 + 19, complete=False)
+            for i in range(1, 8)
+        ],
     ]
     items.append(group("That is the complete conclusion.", 160, 179, complete=True))
     items.append(group("A separate point begins here.", 180, 199, complete=True))
