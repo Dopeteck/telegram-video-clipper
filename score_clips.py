@@ -855,7 +855,7 @@ def _nearest(values, t):
 # ----------------------------------------------------------------- run / cli
 
 def run(workdir, llm=None, host=OLLAMA_HOST, min_score=None, max_clips=10,
-        min_len=20, max_len=75, search=None, pick=None, semantic=None,
+        min_len=60, max_len=180, search=None, pick=None, semantic=None,
         embed_model="nomic-embed-text", video_path=None):
     """Score the transcript in workdir and write workdir/segments.json.
 
@@ -957,8 +957,8 @@ def main():
     ap.add_argument("--min-score", type=float, default=None,
                     help="keep clips at/above this score (default 6.5 heuristic, 8.0 llm)")
     ap.add_argument("--max-clips", type=int, default=10)
-    ap.add_argument("--min-len", type=int, default=20, help="min clip seconds")
-    ap.add_argument("--max-len", type=int, default=75, help="max clip seconds")
+    ap.add_argument("--min-len", type=int, default=60, help="minimum context-first clip duration in seconds")
+    ap.add_argument("--max-len", type=int, default=180, help="maximum clip duration in seconds; extend to a complete thought within this limit")
     ap.add_argument("--search", default=None, metavar="KEYWORDS",
                     help="skip virality scoring: build clips around transcript "
                          "sentences containing ALL keywords (e.g. --search \"pricing\")")
@@ -978,7 +978,9 @@ LLM_SYSTEM = (
     "You are a short-form video editor. You receive a timestamped transcript. "
     "Select the moments most likely to go viral as self-contained clips. Rules:\n"
     "- Each clip MUST be a complete thought: hook, build, payoff. Never end mid-sentence.\n"
-    "- Clip length between {min_len} and {max_len} seconds.\n"
+    "- Aim for a complete, self-contained moment, not an arbitrary short duration.\n"
+    "- Clip length must be between {min_len} and {max_len} seconds. Use the time needed to include the full setup, explanation, and payoff; a strong moment may run 1-3 minutes.\n"
+    "- Never shorten a coherent story or explanation just to make the clip shorter. Stop at its natural ending, and do not pad after the point is complete.\n"
     "- Return AT MOST {max_clips} clips, taken from DIFFERENT parts of the video.\n"
     "- Rate each clip 0-10 on hook, shock, humour, controversy, insight, emotion, "
     "energy and complete arc; put the mean in 'overall'.\n"
