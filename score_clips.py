@@ -430,7 +430,7 @@ def _ends_dangling(text):
 
 
 def _ends_question(text):
-    return (text or "").strip().rstrip('"\\'”’)]}').endswith("?")
+    return (text or "").strip().rstrip("\"'”’)]}").endswith("?")
 
 
 def _group_gap(left, right):
