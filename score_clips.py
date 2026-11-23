@@ -416,6 +416,11 @@ def _opens_dependent(text):
 
 
 def _ends_dangling(text):
+    # Explicit terminal punctuation wins over the lexical tail heuristic.
+    # Words such as "this", "that", or "to" can be legitimate sentence-final
+    # words; treating them as dangling after a full stop rejects good clips.
+    if is_arc_complete(text):
+        return False
     return _last_word(text) in INCOMPLETE_TAILS
 
 
