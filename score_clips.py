@@ -522,11 +522,16 @@ def _grow_window(sentences, seed, taken, min_len, max_len, av_features=None):
             return None
 
     j = seed
-    # Reach the target duration, but stop at real pauses and respect max_len.
+    # Grow toward the target only while the next sentence belongs to the
+    # same narrative. Never pad a coherent short moment with unrelated speech.
     while span(a, j) < min_len and j + 1 < n and not taken[j + 1]:
-        if _is_natural_break(sentences[j], sentences[j + 1], av_features):
+        current = sentences[j]
+        following = sentences[j + 1]
+        if _is_natural_break(current, following, av_features):
             break
         if span(a, j + 1) > max_len:
+            break
+        if not _is_arc_continuation(current, following):
             break
         j += 1
 
