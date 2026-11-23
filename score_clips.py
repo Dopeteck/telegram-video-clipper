@@ -392,43 +392,156 @@ def _creator_value_score(text):
     return min(1.0, signals)
 
 
-def _grow_window(sentences, seed, taken, min_len, max_len, av_features=None):
-    """Grow a window from `seed` to >= min_len seconds, then extend or trim it so
-    it always ends on a complete sentence (the #1 complaint about AI clippers is
-    clips that start or end mid-thought). Returns (seed, end_idx) or None."""
-    n = len(sentences)
+DEPENDENT_OPENERS = {
+    "and", "but", "because", "so", "although", "though", "while",
+}
+MAX_CONTEXT_GROUPS = 2
+MAX_CONTEXT_SECONDS = 12.0
+MAX_ANSWER_GAP = 3.0
+MAX_CONTINUATION_GAP = 0.8
 
-    # If the seed is an emergency duration split inside a thought, start at
-    # the preceding group boundary so a candidate does not open mid-sentence.
-    while seed > 0 and not _group_complete(sentences[seed - 1]):
-        seed -= 1
+
+def _first_word(text):
+    words = re.findall(r"[\w']+", (text or "").lower())
+    return words[0] if words else ""
+
+
+def _last_word(text):
+    words = re.findall(r"[\w']+", (text or "").lower())
+    return words[-1] if words else ""
+
+
+def _opens_dependent(text):
+    return _first_word(text) in DEPENDENT_OPENERS
+
+
+def _ends_dangling(text):
+    # Explicit terminal punctuation wins over the lexical tail heuristic.
+    # Words such as "this", "that", or "to" can be legitimate sentence-final
+    # words; treating them as dangling after a full stop rejects good clips.
+    if is_arc_complete(text):
+        return False
+    return _last_word(text) in INCOMPLETE_TAILS
+
+
+def _ends_question(text):
+    return (text or "").strip().rstrip("\"'”’)]}").endswith("?")
+
+
+def _group_gap(left, right):
+    return max(0.0, float(right["start"]) - float(left["end"]))
+
+
+def _grow_window(sentences, seed, taken, min_len, max_len, av_features=None):
+    """Build a self-contained clip window without crossing a real scene break.
+
+    Adds a small amount of preceding context for dependent openers or answers,
+    includes a nearby answer to a question, and rejects dangling endings. The
+    requested max_len is a hard ceiling; context never silently extends it.
+    """
+    n = len(sentences)
+    if not n or seed < 0 or seed >= n or max_len <= 0:
+        return None
 
     def span(a, b):
-        return sentences[b]["end"] - sentences[a]["start"]
+        return float(sentences[b]["end"]) - float(sentences[a]["start"])
+
+    a = seed
+
+    # Back up from emergency ASR splits until the clip begins at a complete
+    # thought. Never cross a natural pause merely to manufacture context.
+    while a > 0 and not _group_complete(sentences[a]):
+        prev = a - 1
+        if taken[prev] or _is_natural_break(sentences[prev], sentences[a], av_features):
+            return None
+        if span(prev, seed) > min(max_len, MAX_CONTEXT_SECONDS):
+            return None
+        a = prev
+
+    # A sentence beginning with "And", "But", "Because", "This", etc. often
+    # depends on the line before it. Likewise, an answer should retain its
+    # preceding question. Borrow at most two nearby groups.
+    context_count = 0
+    while a > 0 and context_count < MAX_CONTEXT_GROUPS:
+        current = sentences[a]
+        previous = sentences[a - 1]
+        needs_context = _opens_dependent(current.get("text", "")) or _ends_question(
+            previous.get("text", ""))
+        if not needs_context or taken[a - 1]:
+            break
+        if _is_natural_break(previous, current, av_features):
+            break
+        if _group_gap(previous, current) > MAX_ANSWER_GAP:
+            break
+        if span(a - 1, seed) > min(max_len, MAX_CONTEXT_SECONDS):
+            break
+        a -= 1
+        context_count += 1
+
+    # Do not begin on a dependent fragment if no safe context was available.
+    # An unpunctuated opening clause may still be completed by the next group.
+    if _opens_dependent(sentences[a].get("text", "")):
+        return None
+    if span(a, seed) > max_len:
+        a = seed
+        if _opens_dependent(sentences[a].get("text", "")):
+            return None
 
     j = seed
-    while span(seed, j) < min_len and j + 1 < n and not taken[j + 1]:
+    # Reach the target duration, but stop at real pauses and respect max_len.
+    while span(a, j) < min_len and j + 1 < n and not taken[j + 1]:
         if _is_natural_break(sentences[j], sentences[j + 1], av_features):
             break
-        j += 1
-    while span(seed, j) > max_len and j > seed:
-        j -= 1
-    if span(seed, j) < min_len * 0.6:
-        return None
-    # Keep growing until the final group has a reliable boundary marker.
-    while not _group_complete(sentences[j]) and j + 1 < n \
-            and not taken[j + 1] and span(seed, j + 1) <= max_len:
-        if _is_natural_break(sentences[j], sentences[j + 1], av_features):
+        if span(a, j + 1) > max_len:
             break
         j += 1
-    # still incomplete -> back off to the last complete sentence in the window
-    while j > seed and not _group_complete(sentences[j]):
+
+    # Extend incomplete clauses, dangling prepositions/conjunctions, and
+    # questions through their nearby continuation/answer when possible.
+    while j + 1 < n and not taken[j + 1]:
+        current = sentences[j]
+        following = sentences[j + 1]
+        text = current.get("text", "")
+        gap = _group_gap(current, following)
+        needs_answer = _ends_question(text)
+        needs_continuation = (
+            not _group_complete(current)
+            or _ends_dangling(text)
+            or (_opens_dependent(following.get("text", "")) and gap <= MAX_CONTINUATION_GAP)
+        )
+        if not (needs_answer or needs_continuation):
+            break
+        if gap > (MAX_ANSWER_GAP if needs_answer else MAX_CONTINUATION_GAP):
+            break
+        if _is_natural_break(current, following, av_features):
+            break
+        if span(a, j + 1) > max_len:
+            break
+        j += 1
+        # A single answer can complete a question; avoid swallowing a whole
+        # subsequent conversation just because the answer itself is a question.
+        if needs_answer and _group_complete(sentences[j]) and not _ends_question(
+                sentences[j].get("text", "")):
+            break
+
+    # Back off to the last genuinely complete group. A question without an
+    # answer is not a complete clip ending.
+    while j >= a and (
+        not _group_complete(sentences[j])
+        or _ends_dangling(sentences[j].get("text", ""))
+        or _ends_question(sentences[j].get("text", ""))
+    ):
         j -= 1
-    if not _group_complete(sentences[j]):
+    if j < a:
         return None
-    if span(seed, j) < min_len * 0.6:
+
+    # A clip that opens on a dependent sentence is still incomplete.
+    if _opens_dependent(sentences[a].get("text", "")):
         return None
-    return seed, j
+    duration = span(a, j)
+    if duration < min_len * 0.6 or duration > max_len:
+        return None
+    return a, j
 
 
 def _make_segment(sentences, a, b, av_features=None):
@@ -678,16 +791,44 @@ def ollama_select(data, model, host, min_score, max_clips, min_len, max_len, tim
         valid.append({"start": round(start, 2), "end": round(end, 2),
                       "hook": make_hook(hook, 8), "overall": round(overall, 1)})
 
-    # snap to sentence boundaries (nearest within 3s) so clips never cut mid-word
+    # Apply the same complete-moment boundary rules as heuristic, keyword,
+    # and semantic selection. Ollama proposes the moment; local code owns cuts.
     starts = [s["start"] for s in sentences]
     ends = [s["end"] for s in sentences]
-    for seg in valid:
+    used = [False] * len(sentences)
+    normalized = []
+    for seg in sorted(valid, key=lambda item: item["overall"], reverse=True):
         si = _nearest(starts, seg["start"])
         ei = _nearest(ends, seg["end"])
-        if 2.0 < ends[ei] - starts[si] < max_len + 15:
-            seg["start"], seg["end"] = round(starts[si], 2), round(ends[ei], 2)
+        window = _grow_window(sentences, si, used, min_len, max_len)
+        if window is None:
+            continue
+        a, b = window
+        # Keep the model's chosen ending when it adds useful context, while
+        # still enforcing complete thoughts, natural breaks, and the hard cap.
+        while b < ei and b + 1 < len(sentences) and not used[b + 1]:
+            if _is_natural_break(sentences[b], sentences[b + 1]):
+                break
+            if sentences[b + 1]["end"] - sentences[a]["start"] > max_len:
+                break
+            b += 1
+        while b >= a and (
+            not _group_complete(sentences[b])
+            or _ends_dangling(sentences[b].get("text", ""))
+            or _ends_question(sentences[b].get("text", ""))
+        ):
+            b -= 1
+        if b < a:
+            continue
+        seg["start"] = round(sentences[a]["start"], 2)
+        seg["end"] = round(sentences[b]["end"], 2)
+        if seg["end"] - seg["start"] > max_len:
+            continue
+        normalized.append(seg)
+        for idx in range(a, b + 1):
+            used[idx] = True
 
-    valid.sort(key=lambda s: s["start"])
+    valid = sorted(normalized, key=lambda s: s["start"])
     dedup = []
     for seg in valid:
         if dedup and seg["start"] < dedup[-1]["end"] - 2:
