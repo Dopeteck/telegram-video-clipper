@@ -200,7 +200,7 @@ class TestNearest:
 
 class TestRun:
     def test_run_writes_segments(self, workdir):
-        segs, mode = score_clips.run(workdir, min_score=0)
+        segs, mode = score_clips.run(workdir, min_len=20, max_len=40, min_score=0)
         assert mode == "heuristic"
         assert (workdir / "segments.json").exists()
         on_disk = json.loads((workdir / "segments.json").read_text())
@@ -208,7 +208,7 @@ class TestRun:
 
     def test_ollama_fallback_on_dead_server(self, workdir):
         segs, mode = score_clips.run(workdir, llm="qwen2.5:7b",
-                                     host="http://127.0.0.1:1", max_clips=3, min_score=0)
+                                     host="http://127.0.0.1:1", max_clips=3, min_len=20, max_len=40, min_score=0)
         assert mode == "heuristic"       # graceful fallback, no crash
         assert len(segs) >= 1
 
@@ -641,7 +641,7 @@ class TestProjectsOptions:
     def test_blur_fill_accepted(self):
         opts = projects.validate_options({"blur_fill": True})
         assert opts["blur_fill"] is True
-        assert opts["min_len"] == 25 and opts["max_len"] == 40
+        assert opts["min_len"] == 60 and opts["max_len"] == 180
 
     def test_blur_fill_must_be_bool(self):
         with pytest.raises(ValueError):
