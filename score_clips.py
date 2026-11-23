@@ -411,12 +411,12 @@ MAX_CONTINUATION_GAP = 0.8
 
 
 def _first_word(text):
-    words = re.findall(r"[\\w']+", (text or "").lower())
+    words = re.findall(r"[\w']+", (text or "").lower())
     return words[0] if words else ""
 
 
 def _last_word(text):
-    words = re.findall(r"[\\w']+", (text or "").lower())
+    words = re.findall(r"[\w']+", (text or "").lower())
     return words[-1] if words else ""
 
 
