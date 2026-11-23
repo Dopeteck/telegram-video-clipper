@@ -450,8 +450,8 @@ def _is_arc_continuation(left, right):
     """Recognize adjacent sentences that are still developing the same point."""
     if _group_gap(left, right) > 1.8:
         return False
-    following = re.sub(r"^[\\W_]+", "", str(right.get("text", "")).lower())
-    if any(re.match(r"^" + re.escape(phrase) + r"\\b", following)
+    following = re.sub(r"^[\W_]+", "", str(right.get("text", "")).lower())
+    if any(re.match(r"^" + re.escape(phrase) + r"\b", following)
            for phrase in _CONTINUATION_STARTERS):
         return True
     def content_words(text):
