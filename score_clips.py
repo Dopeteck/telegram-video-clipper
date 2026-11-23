@@ -798,14 +798,32 @@ def ollama_select(data, model, host, min_score, max_clips, min_len, max_len, tim
     # Apply the same complete-moment boundary rules as heuristic, keyword,
     # and semantic selection. Ollama proposes the moment; local code owns cuts.
     starts = [s["start"] for s in sentences]
+    ends = [s["end"] for s in sentences]
     used = [False] * len(sentences)
     normalized = []
     for seg in sorted(valid, key=lambda item: item["overall"], reverse=True):
         si = _nearest(starts, seg["start"])
+        ei = _nearest(ends, seg["end"])
         window = _grow_window(sentences, si, used, min_len, max_len)
         if window is None:
             continue
         a, b = window
+        # Keep the model's chosen ending when it adds useful context, while
+        # still enforcing complete thoughts, natural breaks, and the hard cap.
+        while b < ei and b + 1 < len(sentences) and not used[b + 1]:
+            if _is_natural_break(sentences[b], sentences[b + 1]):
+                break
+            if sentences[b + 1]["end"] - sentences[a]["start"] > max_len:
+                break
+            b += 1
+        while b >= a and (
+            not _group_complete(sentences[b])
+            or _ends_dangling(sentences[b].get("text", ""))
+            or _ends_question(sentences[b].get("text", ""))
+        ):
+            b -= 1
+        if b < a:
+            continue
         seg["start"] = round(sentences[a]["start"], 2)
         seg["end"] = round(sentences[b]["end"], 2)
         if seg["end"] - seg["start"] > max_len:
