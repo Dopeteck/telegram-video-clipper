@@ -433,9 +433,9 @@ def _group_gap(left, right):
 
 
 _CONTINUATION_STARTERS = (
-    "and", "but", "so", "then", "because", "also", "however", "therefore",
-    "for example", "for instance", "which", "that means", "this means",
-    "as a result", "on top of that", "another thing", "the other thing",
+    "and then", "because", "however", "therefore", "for example",
+    "for instance", "which", "that means", "this means", "as a result",
+    "on top of that", "in other words",
 )
 _CONTINUATION_STOPWORDS = {
     "about", "after", "again", "also", "because", "before", "being", "could",
