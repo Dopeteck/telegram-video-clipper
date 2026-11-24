@@ -82,3 +82,65 @@ def test_tight_continuation_with_and_is_kept():
         group("And then the whole room erupted.", 2.2, 5.2),
     ]
     assert grow(items, 0, min_len=2.5) == (0, 1)
+
+
+
+def test_short_complete_moment_is_not_padded_with_unrelated_speech():
+    items = [
+        group("The founder explains the exact mistake that nearly ruined the business.", 0, 40),
+        group("Meanwhile the weather forecast predicts heavy rain tomorrow.", 40.2, 60.2),
+    ]
+    assert grow(items, 0, min_len=60, max_len=180) == (0, 0)
+
+
+def test_context_first_window_can_grow_to_a_two_minute_thought():
+    items = [
+        group("The point started with an important detail and", 0, 20, complete=False),
+        group("then the speaker explained why it mattered and", 20.2, 40.2, complete=False),
+        group("gave the example that made the situation clear and", 40.4, 60.4, complete=False),
+        group("continued with the consequence nobody had considered and", 60.6, 80.6, complete=False),
+        group("explained how the decision affected everyone and", 80.8, 100.8, complete=False),
+        group("finally showed why the whole story mattered.", 101.0, 121.0, complete=True),
+    ]
+    window = grow(items, 0, min_len=60, max_len=180)
+    assert window == (0, 5)
+    assert items[window[1]]["end"] - items[window[0]]["start"] >= 120
+
+
+def test_context_growth_respects_three_minute_hard_ceiling():
+    items = [
+        group("The speaker begins explaining the story.", 0, 19, complete=True),
+        *[
+            group(f"And then the speaker explains part {i} of the same story", i * 20, i * 20 + 19, complete=False)
+            for i in range(1, 8)
+        ],
+    ]
+    items.append(group("And that is how the speaker completed the same story.", 160, 179, complete=True))
+    items.append(group("A separate point begins here.", 180, 199, complete=True))
+    window = grow(items, 0, min_len=60, max_len=180)
+    assert window is not None
+    a, b = window
+    assert items[b]["end"] - items[a]["start"] <= 180
+    assert b == 8
+
+
+def test_adjacent_complete_sentences_stay_together_until_story_payoff():
+    items = [
+        group("The company had one problem with its payment system.", 0, 20, complete=True),
+        group("And then customers started reporting failures in that payment system.", 20.2, 40.2, complete=True),
+        group("Because that payment system kept rejecting valid cards.", 40.4, 60.4, complete=True),
+        group("The support team could not explain why the payment system kept failing.", 60.6, 80.6, complete=True),
+        group("The founder traced the payment system failure to one small configuration.", 80.8, 100.8, complete=True),
+        group("That configuration fixed the entire payment problem.", 101.0, 121.0, complete=True),
+    ]
+    window = grow(items, 0, min_len=60, max_len=180)
+    assert window == (0, 5)
+    assert items[window[1]]["end"] - items[window[0]]["start"] >= 120
+
+
+def test_common_conjunction_does_not_join_unrelated_speech():
+    items = [
+        group("The founder explains the payment failure that nearly ruined the business.", 0, 40),
+        group("And the weather forecast predicts heavy rain tomorrow.", 40.2, 60.2),
+    ]
+    assert grow(items, 0, min_len=60, max_len=180) == (0, 0)

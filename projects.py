@@ -16,7 +16,7 @@ from captions import update_transcript
 DEFAULT_OPTIONS = {"aspect": "16:9", "style": "default", "tighten": False,
                    "loudnorm": False, "whisper_model": "medium", "device": "cpu",
                    "language": None,
-                   "min_len": 25, "max_len": 40, "max_clips": 10, "min_score": None,
+                   "min_len": 60, "max_len": 180, "max_clips": 10, "min_score": None,
                    "llm": None, "search": None, "semantic": None,
                    "embed_model": "nomic-embed-text", "brand": None,
                    "layout": "single", "centers": [0.25, 0.75], "blur_fill": False}

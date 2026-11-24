@@ -138,8 +138,8 @@ class TestProjectsYouTubePrepare:
         )
         st = projects.read_project(projects.project_path(tmp_path, state["id"]))
         assert st["options"]["blur_fill"] is True
-        assert st["options"]["min_len"] == 25
-        assert st["options"]["max_len"] == 40
+        assert st["options"]["min_len"] == 60
+        assert st["options"]["max_len"] == 180
 
     def test_download_section_yt_dlp_path_calls_correct_args(
         self, tmp_path, monkeypatch

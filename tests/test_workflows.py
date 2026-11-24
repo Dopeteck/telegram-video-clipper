@@ -68,6 +68,8 @@ def test_process_video_requests_multiple_quality_clips_and_cjk_fonts():
     run = next(s["run"] for s in steps if s["name"] == "Run Chopify processing")
     assert "'--max-clips', '3'" in run
     assert "'--min-score', '5.5'" in run
+    assert "'--min-len', '60'" in run
+    assert "'--max-len', '180'" in run
 
 
 def test_process_video_reads_the_fields_the_worker_actually_returns():

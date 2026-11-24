@@ -466,6 +466,8 @@ jobs:
               '--no-preflight',
               '--max-clips', '3',
               '--min-score', '5.5',
+              '--min-len', '60',
+              '--max-len', '180',
           ]
           if enable_tighten:
               cmd.append('--tighten')

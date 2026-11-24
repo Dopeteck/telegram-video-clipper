@@ -432,6 +432,39 @@ def _group_gap(left, right):
     return max(0.0, float(right["start"]) - float(left["end"]))
 
 
+_CONTINUATION_STARTERS = (
+    "and then", "because", "however", "therefore", "for example",
+    "for instance", "which", "that means", "this means", "as a result",
+    "on top of that", "in other words",
+)
+_CONTINUATION_STOPWORDS = {
+    "about", "after", "again", "also", "because", "before", "being", "could",
+    "does", "doing", "from", "have", "here", "into", "just", "more", "most",
+    "only", "other", "over", "same", "some", "such", "than", "that", "their",
+    "them", "there", "these", "they", "this", "those", "through", "very",
+    "what", "when", "where", "which", "while", "with", "would", "your",
+}
+
+
+def _is_arc_continuation(left, right):
+    """Recognize adjacent sentences that are still developing the same point."""
+    if _group_gap(left, right) > 1.8:
+        return False
+    following = re.sub(r"^[\W_]+", "", str(right.get("text", "")).lower())
+    if any(re.match(r"^" + re.escape(phrase) + r"\b", following)
+           for phrase in _CONTINUATION_STARTERS):
+        return True
+    def content_words(text):
+        return {token for token in re.findall(r"[a-z0-9']+", str(text).lower())
+                if len(token) >= 5 and token not in _CONTINUATION_STOPWORDS}
+    left_words = content_words(left.get("text", ""))
+    right_words = content_words(right.get("text", ""))
+    if not left_words or not right_words:
+        return False
+    overlap = len(left_words & right_words) / max(1, min(len(left_words), len(right_words)))
+    return overlap >= 0.20
+
+
 def _grow_window(sentences, seed, taken, min_len, max_len, av_features=None):
     """Build a self-contained clip window without crossing a real scene break.
 
@@ -465,8 +498,9 @@ def _grow_window(sentences, seed, taken, min_len, max_len, av_features=None):
     while a > 0 and context_count < MAX_CONTEXT_GROUPS:
         current = sentences[a]
         previous = sentences[a - 1]
-        needs_context = _opens_dependent(current.get("text", "")) or _ends_question(
-            previous.get("text", ""))
+        needs_context = (_opens_dependent(current.get("text", "")) or
+                         _ends_question(previous.get("text", "")) or
+                         _is_arc_continuation(previous, current))
         if not needs_context or taken[a - 1]:
             break
         if _is_natural_break(previous, current, av_features):
@@ -488,11 +522,30 @@ def _grow_window(sentences, seed, taken, min_len, max_len, av_features=None):
             return None
 
     j = seed
-    # Reach the target duration, but stop at real pauses and respect max_len.
+    # Grow toward the target only while the next sentence belongs to the
+    # same narrative. Never pad a coherent short moment with unrelated speech.
     while span(a, j) < min_len and j + 1 < n and not taken[j + 1]:
-        if _is_natural_break(sentences[j], sentences[j + 1], av_features):
+        current = sentences[j]
+        following = sentences[j + 1]
+        if _is_natural_break(current, following, av_features):
             break
         if span(a, j + 1) > max_len:
+            break
+        if not _is_arc_continuation(current, following):
+            break
+        j += 1
+
+    # Once the minimum context is present, keep following the same narrative
+    # across adjacent, semantically linked sentences. This lets a story or
+    # explanation run 1-3 minutes instead of stopping at an arbitrary sentence.
+    while j + 1 < n and not taken[j + 1]:
+        current = sentences[j]
+        following = sentences[j + 1]
+        if _is_natural_break(current, following, av_features):
+            break
+        if span(a, j + 1) > max_len:
+            break
+        if not _is_arc_continuation(current, following):
             break
         j += 1
 
@@ -507,7 +560,9 @@ def _grow_window(sentences, seed, taken, min_len, max_len, av_features=None):
         needs_continuation = (
             not _group_complete(current)
             or _ends_dangling(text)
-            or (_opens_dependent(following.get("text", "")) and gap <= MAX_CONTINUATION_GAP)
+            or (_opens_dependent(following.get("text", ""))
+                and gap <= MAX_CONTINUATION_GAP
+                and _is_arc_continuation(current, following))
         )
         if not (needs_answer or needs_continuation):
             break
@@ -855,7 +910,7 @@ def _nearest(values, t):
 # ----------------------------------------------------------------- run / cli
 
 def run(workdir, llm=None, host=OLLAMA_HOST, min_score=None, max_clips=10,
-        min_len=20, max_len=75, search=None, pick=None, semantic=None,
+        min_len=60, max_len=180, search=None, pick=None, semantic=None,
         embed_model="nomic-embed-text", video_path=None):
     """Score the transcript in workdir and write workdir/segments.json.
 
@@ -957,8 +1012,8 @@ def main():
     ap.add_argument("--min-score", type=float, default=None,
                     help="keep clips at/above this score (default 6.5 heuristic, 8.0 llm)")
     ap.add_argument("--max-clips", type=int, default=10)
-    ap.add_argument("--min-len", type=int, default=20, help="min clip seconds")
-    ap.add_argument("--max-len", type=int, default=75, help="max clip seconds")
+    ap.add_argument("--min-len", type=int, default=60, help="minimum context-first clip duration in seconds")
+    ap.add_argument("--max-len", type=int, default=180, help="maximum clip duration in seconds; extend to a complete thought within this limit")
     ap.add_argument("--search", default=None, metavar="KEYWORDS",
                     help="skip virality scoring: build clips around transcript "
                          "sentences containing ALL keywords (e.g. --search \"pricing\")")
@@ -978,7 +1033,9 @@ LLM_SYSTEM = (
     "You are a short-form video editor. You receive a timestamped transcript. "
     "Select the moments most likely to go viral as self-contained clips. Rules:\n"
     "- Each clip MUST be a complete thought: hook, build, payoff. Never end mid-sentence.\n"
-    "- Clip length between {min_len} and {max_len} seconds.\n"
+    "- Aim for a complete, self-contained moment, not an arbitrary short duration.\n"
+    "- Clip length must be between {min_len} and {max_len} seconds. Use the time needed to include the full setup, explanation, and payoff; a strong moment may run 1-3 minutes.\n"
+    "- Never shorten a coherent story or explanation just to make the clip shorter. Stop at its natural ending, and do not pad after the point is complete.\n"
     "- Return AT MOST {max_clips} clips, taken from DIFFERENT parts of the video.\n"
     "- Rate each clip 0-10 on hook, shock, humour, controversy, insight, emotion, "
     "energy and complete arc; put the mean in 'overall'.\n"

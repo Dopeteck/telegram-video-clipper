@@ -34,11 +34,11 @@ def sentence(text, start):
 def sample_words():
     words = []
     words += sentence("Here is the thing nobody tells you about growing an audience.", 0.0)
-    words += sentence("The secret is consistency not talent, and that is the truth.", 8.0)
-    words += sentence("Um, most creators quit after three months of posting.", 16.5)
-    words += sentence("The biggest mistake is copying viral videos instead of building a system.", 25.0)
-    words += sentence("So here is how you fix it, first pick one format and publish weekly.", 34.0)
-    words += sentence("Anyway, thanks for watching the whole video today.", 43.0)
+    words += sentence("The secret is consistency not talent, and that is the truth.", 5.0)
+    words += sentence("Um, most creators quit after three months of posting.", 10.0)
+    words += sentence("The biggest mistake is copying viral videos instead of building a system.", 15.0)
+    words += sentence("So here is how you fix it, first pick one format and publish weekly.", 20.0)
+    words += sentence("Anyway, thanks for watching the whole video today.", 25.0)
     t = 0.0
     return words
 
@@ -200,7 +200,7 @@ class TestNearest:
 
 class TestRun:
     def test_run_writes_segments(self, workdir):
-        segs, mode = score_clips.run(workdir, min_score=0)
+        segs, mode = score_clips.run(workdir, min_len=5, max_len=40, min_score=0)
         assert mode == "heuristic"
         assert (workdir / "segments.json").exists()
         on_disk = json.loads((workdir / "segments.json").read_text())
@@ -208,7 +208,7 @@ class TestRun:
 
     def test_ollama_fallback_on_dead_server(self, workdir):
         segs, mode = score_clips.run(workdir, llm="qwen2.5:7b",
-                                     host="http://127.0.0.1:1", max_clips=3, min_score=0)
+                                     host="http://127.0.0.1:1", max_clips=3, min_len=5, max_len=40, min_score=0)
         assert mode == "heuristic"       # graceful fallback, no crash
         assert len(segs) >= 1
 
@@ -219,7 +219,7 @@ class TestRun:
     def test_bom_transcript_accepted(self, workdir):
         raw = (workdir / "transcript.json").read_bytes()
         (workdir / "transcript.json").write_bytes(b"\xef\xbb\xbf" + raw)
-        segs, _ = score_clips.run(workdir, min_score=0)
+        segs, _ = score_clips.run(workdir, min_score=0, min_len=5, max_len=50)
         assert len(segs) >= 1
 
     def test_sparse_asr_fails_gracefully_with_compact_diagnostics(self, workdir, capsys):
@@ -272,16 +272,16 @@ class TestRun:
         words = []
         segments = []
         phrases = [
-            "the reason this matters is because your first idea is rarely your best idea",
-            "I learned the hard way that customers teach you what to build next",
-            "if you listen carefully you can turn every complaint into a useful lesson",
+            "the reason this matters is because your first idea is rarely your best idea for customers.",
+            "And I learned the hard way that customers teach you what to build next for customers.",
+            "And if you listen carefully to customers you can turn every complaint into a useful lesson for customers.",
         ]
         for group_index in range(72):
-            start = group_index * 9.0
+            start = group_index * 5.6
             phrase = phrases[group_index % len(phrases)].split()
             local_words = [make_word(word, start + i * 0.34) for i, word in enumerate(phrase)]
             words.extend(local_words)
-            segments.append({"start": start, "end": local_words[-1]["end"] + 0.1})
+            segments.append({"start": start, "end": local_words[-1]["end"] + 0.1, "text": " ".join(phrase)})
         groups = score_clips.sentenceize(words, segments=segments)
         candidates = score_clips.build_candidates(groups, min_len=20, max_len=50, max_clips=24)
         assert len(candidates) >= 6
@@ -332,9 +332,9 @@ class TestPlanCuts:
         assert keeps == [(0.0, 30.0)]
 
     def test_filler_words_dropped(self, sample_words):
-        keeps = tighten.plan_cuts(sample_words, 16.5, 25.0, fillers=True, silence=False)
+        keeps = tighten.plan_cuts(sample_words, 10.0, 15.0, fillers=True, silence=False)
         total = sum(b - a for a, b in keeps)
-        assert total < 25.0 - 16.5          # something was cut
+        assert total < 15.0 - 10.0          # filler word was cut
         # "um" sits at clip-relative ~0-0.35s and is guarded only by GUARD=0.15
         assert all(a >= 0.0 for a, b in keeps)
 
@@ -641,7 +641,7 @@ class TestProjectsOptions:
     def test_blur_fill_accepted(self):
         opts = projects.validate_options({"blur_fill": True})
         assert opts["blur_fill"] is True
-        assert opts["min_len"] == 25 and opts["max_len"] == 40
+        assert opts["min_len"] == 60 and opts["max_len"] == 180
 
     def test_blur_fill_must_be_bool(self):
         with pytest.raises(ValueError):
