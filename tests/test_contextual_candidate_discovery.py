@@ -1,5 +1,5 @@
 """Regression tests for context-aware candidate discovery."""
-from score_clips import _is_contextual_continuation, build_candidates
+from score_clips import _is_contextual_continuation, build_candidates, sentenceize
 
 
 def _group(start, text):
@@ -15,6 +15,25 @@ def _group(start, text):
             for i, word in enumerate(words)
         ],
     }
+
+
+
+def test_sentenceize_keeps_first_word_with_next_overlapping_segment():
+    words = [
+        {"word": "First.", "start": 0.0, "end": 0.35},
+        {"word": "And", "start": 1.0, "end": 1.3},
+        {"word": "we", "start": 1.35, "end": 1.65},
+        {"word": "continued.", "start": 1.7, "end": 2.05},
+    ]
+    segments = [
+        {"start": 0.0, "end": 1.15, "text": "First."},
+        {"start": 1.0, "end": 2.1, "text": "And we continued."},
+    ]
+
+    groups = sentenceize(words, segments=segments)
+
+    assert len(groups) == 2
+    assert groups[1]["text"] == "And we continued."
 
 
 def test_context_can_reconnect_to_topic_from_recent_sentence():
