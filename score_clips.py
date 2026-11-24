@@ -481,19 +481,19 @@ def _is_contextual_continuation(sentences, left_index, right_index):
     if _group_gap(left, right) > 1.8:
         return False
 
-    right_words = {
-        token for token in re.findall(r"[a-z0-9']+", str(right.get("text", "")).lower())
-        if len(token) >= 5 and token not in _CONTINUATION_STOPWORDS
-    }
-    if not right_words:
-        return False
-
     # Preserve a short answer to a question even when the answer uses different
     # words (e.g. "Why?" -> "Because ...", "Did you?" -> "Yes, I ...").
     if _ends_question(left.get("text", "")):
         first = _first_word(right.get("text", ""))
         if first in {"yes", "yeah", "no", "well", "because", "actually", "i", "we", "it", "they"}:
             return True
+
+    right_words = {
+        token for token in re.findall(r"[a-z0-9']+", str(right.get("text", "")).lower())
+        if len(token) >= 5 and token not in _CONTINUATION_STOPWORDS
+    }
+    if not right_words:
+        return False
 
     # Reconnect to the topic established in the previous few adjacent groups.
     for prior_index in range(max(0, left_index - 2), left_index):
