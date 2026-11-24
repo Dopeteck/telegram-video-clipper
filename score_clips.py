@@ -560,7 +560,9 @@ def _grow_window(sentences, seed, taken, min_len, max_len, av_features=None):
         needs_continuation = (
             not _group_complete(current)
             or _ends_dangling(text)
-            or (_opens_dependent(following.get("text", "")) and gap <= MAX_CONTINUATION_GAP)
+            or (_opens_dependent(following.get("text", ""))
+                and gap <= MAX_CONTINUATION_GAP
+                and _is_arc_continuation(current, following))
         )
         if not (needs_answer or needs_continuation):
             break
