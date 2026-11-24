@@ -548,6 +548,12 @@ def _grow_window(sentences, seed, taken, min_len, max_len, av_features=None):
                          _is_arc_continuation(previous, current))
         if not needs_context or taken[a - 1]:
             break
+        # Do not pull an already-complete window backward into a fragment.
+        # Broad lexical overlap can connect neighbouring thoughts, but a
+        # dependent opener ("And ...", "Because ...") is not safe as the
+        # beginning of the borrowed context.
+        if _opens_dependent(previous.get("text", "")):
+            break
         if _is_natural_break(previous, current, av_features):
             break
         if _group_gap(previous, current) > MAX_ANSWER_GAP:
