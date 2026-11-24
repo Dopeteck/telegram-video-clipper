@@ -127,7 +127,7 @@ def sentenceize(words, gap=1.2, segments=None, max_group_duration=18.0):
         seg_index = None
         if bounds:
             while (segment_pointer + 1 < len(bounds) and
-                   word["start"] >= bounds[segment_pointer][1] - 0.05):
+                   word["start"] >= bounds[segment_pointer + 1][0] - 0.05):
                 segment_pointer += 1
             seg_index = segment_pointer
         if cur:
