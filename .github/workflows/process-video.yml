@@ -288,7 +288,7 @@ jobs:
               remote_size = int(head.get('ContentLength', 0))
               if remote_size != file_size:
                   raise RuntimeError(
-                      f'R2 source verification failed: expected {file_size} bytes, '
+                      f'uploaded size mismatch: expected {file_size} bytes, '
                       f'found {remote_size}'
                   )
               print(f'Uploaded and verified {key} ({remote_size} bytes)')
@@ -300,7 +300,8 @@ jobs:
                   pass
 
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
-              out.write(f'source_r2_key={key}\\n')Y
+              out.write(f'source_r2_key={key}\\n')
+          PY
 
   process:
     name: Process video and upload clips
