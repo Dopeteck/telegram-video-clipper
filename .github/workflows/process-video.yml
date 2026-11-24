@@ -300,7 +300,7 @@ jobs:
                   pass
 
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
-              out.write(f'source_r2_key={key}\\n')
+              out.write(f'source_r2_key={key}\n')
           PY
 
   process:
