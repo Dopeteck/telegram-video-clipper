@@ -34,11 +34,11 @@ def sentence(text, start):
 def sample_words():
     words = []
     words += sentence("Here is the thing nobody tells you about growing an audience.", 0.0)
-    words += sentence("The secret is consistency not talent, and that is the truth.", 8.0)
-    words += sentence("Um, most creators quit after three months of posting.", 16.5)
-    words += sentence("The biggest mistake is copying viral videos instead of building a system.", 25.0)
-    words += sentence("So here is how you fix it, first pick one format and publish weekly.", 34.0)
-    words += sentence("Anyway, thanks for watching the whole video today.", 43.0)
+    words += sentence("The secret is consistency not talent, and that is the truth.", 5.0)
+    words += sentence("Um, most creators quit after three months of posting.", 10.0)
+    words += sentence("The biggest mistake is copying viral videos instead of building a system.", 15.0)
+    words += sentence("So here is how you fix it, first pick one format and publish weekly.", 20.0)
+    words += sentence("Anyway, thanks for watching the whole video today.", 25.0)
     t = 0.0
     return words
 
@@ -272,16 +272,16 @@ class TestRun:
         words = []
         segments = []
         phrases = [
-            "the reason this matters is because your first idea is rarely your best idea",
-            "I learned the hard way that customers teach you what to build next",
-            "if you listen carefully you can turn every complaint into a useful lesson",
+            "the reason this matters is because your first idea is rarely your best idea.",
+            "And I learned the hard way that customers teach you what to build next.",
+            "And if you listen carefully you can turn every complaint into a useful lesson.",
         ]
         for group_index in range(72):
-            start = group_index * 9.0
+            start = group_index * 5.6
             phrase = phrases[group_index % len(phrases)].split()
             local_words = [make_word(word, start + i * 0.34) for i, word in enumerate(phrase)]
             words.extend(local_words)
-            segments.append({"start": start, "end": local_words[-1]["end"] + 0.1})
+            segments.append({"start": start, "end": local_words[-1]["end"] + 0.1, "text": " ".join(phrase)})
         groups = score_clips.sentenceize(words, segments=segments)
         candidates = score_clips.build_candidates(groups, min_len=20, max_len=50, max_clips=24)
         assert len(candidates) >= 6
