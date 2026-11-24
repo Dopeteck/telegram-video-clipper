@@ -200,7 +200,7 @@ class TestNearest:
 
 class TestRun:
     def test_run_writes_segments(self, workdir):
-        segs, mode = score_clips.run(workdir, min_len=20, max_len=40, min_score=0)
+        segs, mode = score_clips.run(workdir, min_len=5, max_len=40, min_score=0)
         assert mode == "heuristic"
         assert (workdir / "segments.json").exists()
         on_disk = json.loads((workdir / "segments.json").read_text())
@@ -208,7 +208,7 @@ class TestRun:
 
     def test_ollama_fallback_on_dead_server(self, workdir):
         segs, mode = score_clips.run(workdir, llm="qwen2.5:7b",
-                                     host="http://127.0.0.1:1", max_clips=3, min_len=20, max_len=40, min_score=0)
+                                     host="http://127.0.0.1:1", max_clips=3, min_len=5, max_len=40, min_score=0)
         assert mode == "heuristic"       # graceful fallback, no crash
         assert len(segs) >= 1
 
@@ -219,7 +219,7 @@ class TestRun:
     def test_bom_transcript_accepted(self, workdir):
         raw = (workdir / "transcript.json").read_bytes()
         (workdir / "transcript.json").write_bytes(b"\xef\xbb\xbf" + raw)
-        segs, _ = score_clips.run(workdir, min_score=0, min_len=20, max_len=50)
+        segs, _ = score_clips.run(workdir, min_score=0, min_len=5, max_len=50)
         assert len(segs) >= 1
 
     def test_sparse_asr_fails_gracefully_with_compact_diagnostics(self, workdir, capsys):
@@ -332,9 +332,9 @@ class TestPlanCuts:
         assert keeps == [(0.0, 30.0)]
 
     def test_filler_words_dropped(self, sample_words):
-        keeps = tighten.plan_cuts(sample_words, 16.5, 25.0, fillers=True, silence=False)
+        keeps = tighten.plan_cuts(sample_words, 10.0, 15.0, fillers=True, silence=False)
         total = sum(b - a for a, b in keeps)
-        assert total < 25.0 - 16.5          # something was cut
+        assert total < 15.0 - 10.0          # filler word was cut
         # "um" sits at clip-relative ~0-0.35s and is guarded only by GUARD=0.15
         assert all(a >= 0.0 for a, b in keeps)
 
