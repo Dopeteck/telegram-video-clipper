@@ -127,12 +127,20 @@ def test_context_growth_respects_three_minute_hard_ceiling():
 def test_adjacent_complete_sentences_stay_together_until_story_payoff():
     items = [
         group("The company had one problem with its payment system.", 0, 20, complete=True),
-        group("And then customers started reporting the same failure.", 20.2, 40.2, complete=True),
-        group("Because the payment system kept rejecting valid cards.", 40.4, 60.4, complete=True),
-        group("And the support team could not explain what was happening.", 60.6, 80.6, complete=True),
-        group("So the founder finally traced it to one small configuration.", 80.8, 100.8, complete=True),
-        group("And that was the change that fixed the entire problem.", 101.0, 121.0, complete=True),
+        group("And then customers started reporting failures in that payment system.", 20.2, 40.2, complete=True),
+        group("Because that payment system kept rejecting valid cards.", 40.4, 60.4, complete=True),
+        group("The support team could not explain why the payment system kept failing.", 60.6, 80.6, complete=True),
+        group("The founder traced the payment system failure to one small configuration.", 80.8, 100.8, complete=True),
+        group("That configuration fixed the entire payment problem.", 101.0, 121.0, complete=True),
     ]
     window = grow(items, 0, min_len=60, max_len=180)
     assert window == (0, 5)
     assert items[window[1]]["end"] - items[window[0]]["start"] >= 120
+
+
+def test_common_conjunction_does_not_join_unrelated_speech():
+    items = [
+        group("The founder explains the payment failure that nearly ruined the business.", 0, 40),
+        group("And the weather forecast predicts heavy rain tomorrow.", 40.2, 60.2),
+    ]
+    assert grow(items, 0, min_len=60, max_len=180) == (0, 0)
