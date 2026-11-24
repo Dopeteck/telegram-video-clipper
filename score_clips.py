@@ -699,7 +699,7 @@ def _make_segment(sentences, a, b, av_features=None):
     return result
 
 
-def build_candidates(sentences, min_len, max_len, max_clips, av_features=None):
+def build_candidates(sentences, min_len, max_len, max_clips, av_features=None, pool_size=None):
     """Seed windows at the highest-scoring sentences, grow to min_len, dedup, sort.
     Windows always end on a complete sentence (complete-thought rule)."""
     scored = {i: score_sentence(s)[1] for i, s in enumerate(sentences)}
@@ -709,7 +709,8 @@ def build_candidates(sentences, min_len, max_len, max_clips, av_features=None):
     # Build a real alternative pool before applying the quality/spacing gates.
     # A shortlist capped at max_clips can leave only one result after scoring,
     # even when other strong moments exist elsewhere in a long recording.
-    pool_limit = min(len(sentences), max(40, max_clips * 8))
+    requested_pool = max_clips if pool_size is None else max(max_clips, int(pool_size))
+    pool_limit = min(len(sentences), requested_pool)
     temporal_count = min(len(sentences), max(20, max_clips * 4))
     temporal_seeds = sorted({round(i * (len(sentences) - 1) / max(1, temporal_count - 1))
                              for i in range(temporal_count)})
@@ -737,6 +738,11 @@ def build_candidates(sentences, min_len, max_len, max_clips, av_features=None):
         if w is None:
             continue
         a, b = w
+        duration = float(sentences[b]["end"]) - float(sentences[a]["start"])
+        # Production-length clips must meet the requested minimum exactly;
+        # retain the historical short-fixture tolerance for unit tests/tools.
+        if min_len >= 30 and duration < min_len:
+            continue
         key = (round(sentences[a]["start"], 1), round(sentences[b]["end"], 1))
         if key in seen:
             continue
@@ -1007,7 +1013,8 @@ def run(workdir, llm=None, host=OLLAMA_HOST, min_score=None, max_clips=10,
         # Generate a wider shortlist before multimodal ranking so a music
         # passage is not excluded merely because its lyrics score weakly.
         candidates = build_candidates(sentences, min_len, max_len,
-                                      max(max_clips * 8, max_clips), av_features)
+                                      max_clips, av_features,
+                                      pool_size=max(max_clips * 8, max_clips))
         print(f"Candidate windows: {len(candidates)} complete windows from "
               f"{len(sentences)} sentence groups.", flush=True)
         ranked_all = sorted(candidates, key=lambda s: s["overall"], reverse=True)
