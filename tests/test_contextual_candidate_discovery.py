@@ -42,7 +42,7 @@ def test_candidate_builder_keeps_a_pool_larger_than_requested_clip_count():
         topic = "The business decision changed customer growth"
         groups.append(_group(start, f"{topic} number {index}."))
 
-    candidates = build_candidates(groups, min_len=60, max_len=120, max_clips=2)
+    candidates = build_candidates(groups, min_len=60, max_len=120, max_clips=2, pool_size=16)
     assert len(candidates) > 2
     assert all(60 <= item["end"] - item["start"] <= 120 for item in candidates)
 
