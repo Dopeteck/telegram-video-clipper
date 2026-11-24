@@ -19,10 +19,10 @@ def _group(start, text):
 
 def test_context_can_reconnect_to_topic_from_recent_sentence():
     groups = [
-        _group(0, "The company changed its hiring policy."),
+        _group(0, "The company changed its hiring policy for engineers."),
         _group(9, "That surprised almost everybody on the team."),
-        _group(18, "The hiring policy meant experienced engineers were rejected."),
-        _group(27, "Those engineers had already built the product."),
+        _group(18, "The change affected experienced professionals."),
+        _group(27, "Engineers had already built the product."),
     ]
     assert _is_contextual_continuation(groups, 2, 3)
 
@@ -45,3 +45,12 @@ def test_candidate_builder_keeps_a_pool_larger_than_requested_clip_count():
     candidates = build_candidates(groups, min_len=60, max_len=120, max_clips=2)
     assert len(candidates) > 2
     assert all(60 <= item["end"] - item["start"] <= 120 for item in candidates)
+
+
+
+def test_unrelated_adjacent_sentence_does_not_connect():
+    groups = [
+        _group(0, "The company changed its hiring policy."),
+        _group(9, "The weather was beautiful over the weekend."),
+    ]
+    assert not _is_contextual_continuation(groups, 0, 1)
