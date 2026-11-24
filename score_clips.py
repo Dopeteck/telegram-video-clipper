@@ -465,6 +465,50 @@ def _is_arc_continuation(left, right):
     return overlap >= 0.20
 
 
+def _is_contextual_continuation(sentences, left_index, right_index):
+    """Allow a sentence to reconnect to the recent topic, not only its neighbour.
+
+    Podcast answers and explanations often change vocabulary from one sentence
+    to the next. A recent topic reference can still establish continuity across
+    a short conversational exchange. We only look back three groups and never
+    bridge a natural pause or a long gap.
+    """
+    if left_index < 0 or right_index >= len(sentences) or right_index != left_index + 1:
+        return False
+    left, right = sentences[left_index], sentences[right_index]
+    if _is_arc_continuation(left, right):
+        return True
+    if _group_gap(left, right) > 1.8:
+        return False
+
+    right_words = {
+        token for token in re.findall(r"[a-z0-9']+", str(right.get("text", "")).lower())
+        if len(token) >= 5 and token not in _CONTINUATION_STOPWORDS
+    }
+    if not right_words:
+        return False
+
+    # Reconnect to the topic established in the previous few adjacent groups.
+    for prior_index in range(max(0, left_index - 2), left_index):
+        prior = sentences[prior_index]
+        if _group_gap(prior, sentences[prior_index + 1]) > 3.5:
+            continue
+        prior_words = {
+            token for token in re.findall(r"[a-z0-9']+", str(prior.get("text", "")).lower())
+            if len(token) >= 5 and token not in _CONTINUATION_STOPWORDS
+        }
+        if prior_words and len(prior_words & right_words) / max(1, min(len(prior_words), len(right_words))) >= 0.20:
+            return True
+
+    # Preserve a short answer to a question even when the answer uses different
+    # words (e.g. "Why?" -> "Because ...", "Did you?" -> "Yes, I ...").
+    if _ends_question(left.get("text", "")):
+        first = _first_word(right.get("text", ""))
+        if first in {"yes", "yeah", "no", "well", "because", "actually", "i", "we", "it", "they"}:
+            return True
+    return False
+
+
 def _grow_window(sentences, seed, taken, min_len, max_len, av_features=None):
     """Build a self-contained clip window without crossing a real scene break.
 
@@ -531,7 +575,7 @@ def _grow_window(sentences, seed, taken, min_len, max_len, av_features=None):
             break
         if span(a, j + 1) > max_len:
             break
-        if not _is_arc_continuation(current, following):
+        if not _is_contextual_continuation(sentences, j, j + 1):
             break
         j += 1
 
@@ -661,10 +705,14 @@ def build_candidates(sentences, min_len, max_len, max_clips, av_features=None):
     ranked_seeds = sorted(range(len(sentences)), key=lambda i: scored[i], reverse=True)
     # Keep strong dialogue seeds, but also sample the full timeline so quiet
     # lyrics or visually driven sequences can enter the AV shortlist.
-    temporal_count = min(len(sentences), max(1, max_clips * 2))
+    # Build a real alternative pool before applying the quality/spacing gates.
+    # A shortlist capped at max_clips can leave only one result after scoring,
+    # even when other strong moments exist elsewhere in a long recording.
+    pool_limit = min(len(sentences), max(40, max_clips * 8))
+    temporal_count = min(len(sentences), max(20, max_clips * 4))
     temporal_seeds = sorted({round(i * (len(sentences) - 1) / max(1, temporal_count - 1))
                              for i in range(temporal_count)})
-    priority_seeds = ranked_seeds[:max(1, max_clips * 2)]
+    priority_seeds = ranked_seeds[:pool_limit]
     # Interleave score-led and evenly-spaced seeds, so a shortlist capped by
     # max_clips still includes candidate windows from later parts of the video.
     order = []
@@ -682,7 +730,7 @@ def build_candidates(sentences, min_len, max_len, max_clips, av_features=None):
     seen = set()
     taken = [False] * len(sentences)  # window growth itself remains unconstrained
     for seed in order:
-        if len(accepted) >= max_clips:
+        if len(accepted) >= pool_limit:
             break
         w = _grow_window(sentences, seed, taken, min_len, max_len, av_features)
         if w is None:
