@@ -488,6 +488,13 @@ def _is_contextual_continuation(sentences, left_index, right_index):
     if not right_words:
         return False
 
+    # Preserve a short answer to a question even when the answer uses different
+    # words (e.g. "Why?" -> "Because ...", "Did you?" -> "Yes, I ...").
+    if _ends_question(left.get("text", "")):
+        first = _first_word(right.get("text", ""))
+        if first in {"yes", "yeah", "no", "well", "because", "actually", "i", "we", "it", "they"}:
+            return True
+
     # Reconnect to the topic established in the previous few adjacent groups.
     for prior_index in range(max(0, left_index - 2), left_index):
         prior = sentences[prior_index]
@@ -500,12 +507,6 @@ def _is_contextual_continuation(sentences, left_index, right_index):
         if prior_words and len(prior_words & right_words) / max(1, min(len(prior_words), len(right_words))) >= 0.20:
             return True
 
-    # Preserve a short answer to a question even when the answer uses different
-    # words (e.g. "Why?" -> "Because ...", "Did you?" -> "Yes, I ...").
-    if _ends_question(left.get("text", "")):
-        first = _first_word(right.get("text", ""))
-        if first in {"yes", "yeah", "no", "well", "because", "actually", "i", "we", "it", "they"}:
-            return True
     return False
 
 
@@ -589,7 +590,7 @@ def _grow_window(sentences, seed, taken, min_len, max_len, av_features=None):
             break
         if span(a, j + 1) > max_len:
             break
-        if not _is_arc_continuation(current, following):
+        if not _is_contextual_continuation(sentences, j, j + 1):
             break
         j += 1
 
