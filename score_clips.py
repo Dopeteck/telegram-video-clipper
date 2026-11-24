@@ -711,19 +711,20 @@ def build_candidates(sentences, min_len, max_len, max_clips, av_features=None, p
     # even when other strong moments exist elsewhere in a long recording.
     requested_pool = max_clips if pool_size is None else max(max_clips, int(pool_size))
     pool_limit = min(len(sentences), requested_pool)
-    temporal_count = min(len(sentences), max(20, max_clips * 4))
+    # Reserve broad timeline coverage before spending the pool on high-scoring
+    # seeds. Otherwise many similar early sentences can fill the shortlist
+    # before later sections are ever examined.
+    temporal_count = min(
+        len(sentences),
+        max(1, min(pool_limit, max(20, max_clips * 4))),
+    )
     temporal_seeds = sorted({round(i * (len(sentences) - 1) / max(1, temporal_count - 1))
                              for i in range(temporal_count)})
     priority_seeds = ranked_seeds[:pool_limit]
-    # Interleave score-led and evenly-spaced seeds, so a shortlist capped by
-    # max_clips still includes candidate windows from later parts of the video.
-    order = []
-    for i in range(max(len(priority_seeds), len(temporal_seeds))):
-        if i < len(priority_seeds):
-            order.append(priority_seeds[i])
-        if i < len(temporal_seeds):
-            order.append(temporal_seeds[i])
-    order = list(dict.fromkeys(order))
+    # Process evenly spaced seeds first; use score-led seeds only to fill the
+    # remaining capacity. Final ranking still happens after every candidate
+    # has been scored, so coverage does not dictate which clips are selected.
+    order = list(dict.fromkeys(temporal_seeds + priority_seeds))
     # Build overlapping alternatives: greedy "taken" suppression previously
     # removed nearby candidate moments before audiovisual ranking could compare
     # them. Deduplicate near-identical windows only, then let the caller rank
