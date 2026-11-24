@@ -272,9 +272,9 @@ class TestRun:
         words = []
         segments = []
         phrases = [
-            "the reason this matters is because your first idea is rarely your best idea.",
-            "And I learned the hard way that customers teach you what to build next.",
-            "And if you listen carefully you can turn every complaint into a useful lesson.",
+            "the reason this matters is because your first idea is rarely your best idea for customers.",
+            "And I learned the hard way that customers teach you what to build next for customers.",
+            "And if you listen carefully to customers you can turn every complaint into a useful lesson for customers.",
         ]
         for group_index in range(72):
             start = group_index * 5.6
