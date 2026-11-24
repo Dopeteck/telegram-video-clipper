@@ -277,7 +277,10 @@ class TestRun:
             "And if you listen carefully to customers you can turn every complaint into a useful lesson for customers.",
         ]
         for group_index in range(72):
-            start = group_index * 5.6
+            # Keep word timestamps chronological: the longest phrase spans
+            # just over 6 seconds, so 5.6-second spacing created impossible
+            # overlap between adjacent Whisper word sequences.
+            start = group_index * 6.2
             phrase = phrases[group_index % len(phrases)].split()
             local_words = [make_word(word, start + i * 0.34) for i, word in enumerate(phrase)]
             words.extend(local_words)
