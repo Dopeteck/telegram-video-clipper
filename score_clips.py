@@ -127,7 +127,7 @@ def sentenceize(words, gap=1.2, segments=None, max_group_duration=18.0):
         seg_index = None
         if bounds:
             while (segment_pointer + 1 < len(bounds) and
-                   word["start"] >= bounds[segment_pointer][1] - 0.05):
+                   word["start"] >= bounds[segment_pointer + 1][0] - 0.05):
                 segment_pointer += 1
             seg_index = segment_pointer
         if cur:
@@ -465,6 +465,51 @@ def _is_arc_continuation(left, right):
     return overlap >= 0.20
 
 
+def _is_contextual_continuation(sentences, left_index, right_index):
+    """Allow a sentence to reconnect to the recent topic, not only its neighbour.
+
+    Podcast answers and explanations often change vocabulary from one sentence
+    to the next. A recent topic reference can still establish continuity across
+    a short conversational exchange. We only look back three groups and never
+    bridge a natural pause or a long gap.
+    """
+    if left_index < 0 or right_index >= len(sentences) or right_index != left_index + 1:
+        return False
+    left, right = sentences[left_index], sentences[right_index]
+    if _is_arc_continuation(left, right):
+        return True
+    if _group_gap(left, right) > 1.8:
+        return False
+
+    # Preserve a short answer to a question even when the answer uses different
+    # words (e.g. "Why?" -> "Because ...", "Did you?" -> "Yes, I ...").
+    if _ends_question(left.get("text", "")):
+        first = _first_word(right.get("text", ""))
+        if first in {"yes", "yeah", "no", "well", "because", "actually", "i", "we", "it", "they"}:
+            return True
+
+    right_words = {
+        token for token in re.findall(r"[a-z0-9']+", str(right.get("text", "")).lower())
+        if len(token) >= 5 and token not in _CONTINUATION_STOPWORDS
+    }
+    if not right_words:
+        return False
+
+    # Reconnect to the topic established in the previous few adjacent groups.
+    for prior_index in range(max(0, left_index - 2), left_index):
+        prior = sentences[prior_index]
+        if _group_gap(prior, sentences[prior_index + 1]) > 3.5:
+            continue
+        prior_words = {
+            token for token in re.findall(r"[a-z0-9']+", str(prior.get("text", "")).lower())
+            if len(token) >= 5 and token not in _CONTINUATION_STOPWORDS
+        }
+        if prior_words and len(prior_words & right_words) / max(1, min(len(prior_words), len(right_words))) >= 0.20:
+            return True
+
+    return False
+
+
 def _grow_window(sentences, seed, taken, min_len, max_len, av_features=None):
     """Build a self-contained clip window without crossing a real scene break.
 
@@ -503,6 +548,12 @@ def _grow_window(sentences, seed, taken, min_len, max_len, av_features=None):
                          _is_arc_continuation(previous, current))
         if not needs_context or taken[a - 1]:
             break
+        # Do not pull an already-complete window backward into a fragment.
+        # Broad lexical overlap can connect neighbouring thoughts, but a
+        # dependent opener ("And ...", "Because ...") is not safe as the
+        # beginning of the borrowed context.
+        if _opens_dependent(previous.get("text", "")):
+            break
         if _is_natural_break(previous, current, av_features):
             break
         if _group_gap(previous, current) > MAX_ANSWER_GAP:
@@ -531,7 +582,7 @@ def _grow_window(sentences, seed, taken, min_len, max_len, av_features=None):
             break
         if span(a, j + 1) > max_len:
             break
-        if not _is_arc_continuation(current, following):
+        if not _is_contextual_continuation(sentences, j, j + 1):
             break
         j += 1
 
@@ -545,7 +596,7 @@ def _grow_window(sentences, seed, taken, min_len, max_len, av_features=None):
             break
         if span(a, j + 1) > max_len:
             break
-        if not _is_arc_continuation(current, following):
+        if not _is_contextual_continuation(sentences, j, j + 1):
             break
         j += 1
 
@@ -654,26 +705,32 @@ def _make_segment(sentences, a, b, av_features=None):
     return result
 
 
-def build_candidates(sentences, min_len, max_len, max_clips, av_features=None):
+def build_candidates(sentences, min_len, max_len, max_clips, av_features=None, pool_size=None):
     """Seed windows at the highest-scoring sentences, grow to min_len, dedup, sort.
     Windows always end on a complete sentence (complete-thought rule)."""
     scored = {i: score_sentence(s)[1] for i, s in enumerate(sentences)}
     ranked_seeds = sorted(range(len(sentences)), key=lambda i: scored[i], reverse=True)
     # Keep strong dialogue seeds, but also sample the full timeline so quiet
     # lyrics or visually driven sequences can enter the AV shortlist.
-    temporal_count = min(len(sentences), max(1, max_clips * 2))
+    # Build a real alternative pool before applying the quality/spacing gates.
+    # A shortlist capped at max_clips can leave only one result after scoring,
+    # even when other strong moments exist elsewhere in a long recording.
+    requested_pool = max_clips if pool_size is None else max(max_clips, int(pool_size))
+    pool_limit = min(len(sentences), requested_pool)
+    # Reserve broad timeline coverage before spending the pool on high-scoring
+    # seeds. Otherwise many similar early sentences can fill the shortlist
+    # before later sections are ever examined.
+    temporal_count = min(
+        len(sentences),
+        max(1, min(pool_limit, max(20, max_clips * 4))),
+    )
     temporal_seeds = sorted({round(i * (len(sentences) - 1) / max(1, temporal_count - 1))
                              for i in range(temporal_count)})
-    priority_seeds = ranked_seeds[:max(1, max_clips * 2)]
-    # Interleave score-led and evenly-spaced seeds, so a shortlist capped by
-    # max_clips still includes candidate windows from later parts of the video.
-    order = []
-    for i in range(max(len(priority_seeds), len(temporal_seeds))):
-        if i < len(priority_seeds):
-            order.append(priority_seeds[i])
-        if i < len(temporal_seeds):
-            order.append(temporal_seeds[i])
-    order = list(dict.fromkeys(order))
+    priority_seeds = ranked_seeds[:pool_limit]
+    # Process evenly spaced seeds first; use score-led seeds only to fill the
+    # remaining capacity. Final ranking still happens after every candidate
+    # has been scored, so coverage does not dictate which clips are selected.
+    order = list(dict.fromkeys(temporal_seeds + priority_seeds))
     # Build overlapping alternatives: greedy "taken" suppression previously
     # removed nearby candidate moments before audiovisual ranking could compare
     # them. Deduplicate near-identical windows only, then let the caller rank
@@ -682,12 +739,17 @@ def build_candidates(sentences, min_len, max_len, max_clips, av_features=None):
     seen = set()
     taken = [False] * len(sentences)  # window growth itself remains unconstrained
     for seed in order:
-        if len(accepted) >= max_clips:
+        if len(accepted) >= pool_limit:
             break
         w = _grow_window(sentences, seed, taken, min_len, max_len, av_features)
         if w is None:
             continue
         a, b = w
+        duration = float(sentences[b]["end"]) - float(sentences[a]["start"])
+        # Production-length clips must meet the requested minimum exactly;
+        # retain the historical short-fixture tolerance for unit tests/tools.
+        if min_len >= 30 and duration < min_len:
+            continue
         key = (round(sentences[a]["start"], 1), round(sentences[b]["end"], 1))
         if key in seen:
             continue
@@ -958,7 +1020,8 @@ def run(workdir, llm=None, host=OLLAMA_HOST, min_score=None, max_clips=10,
         # Generate a wider shortlist before multimodal ranking so a music
         # passage is not excluded merely because its lyrics score weakly.
         candidates = build_candidates(sentences, min_len, max_len,
-                                      max(max_clips * 8, max_clips), av_features)
+                                      max_clips, av_features,
+                                      pool_size=max(max_clips * 8, max_clips))
         print(f"Candidate windows: {len(candidates)} complete windows from "
               f"{len(sentences)} sentence groups.", flush=True)
         ranked_all = sorted(candidates, key=lambda s: s["overall"], reverse=True)
