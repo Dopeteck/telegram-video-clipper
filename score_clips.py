@@ -23,7 +23,6 @@ No paid APIs, no API keys. Usage:
 """
 import re
 import json
-import math
 import argparse
 import urllib.request
 import unicodedata
@@ -879,7 +878,7 @@ For each chosen clip:
 Each transcript row begins with a zero-based index local to this section, followed by its absolute start/end time and the recognized words. Use those row indices to specify boundaries. Start and end indices are inclusive. Only use indices that appear in the supplied transcript.
 
 Return valid JSON only, with this exact shape:
-{"clips":[{"start_index":12,"end_index":34,"hook":"A concise natural title","overall":8.2,"reason":"Why the complete moment is valuable"}]}
+{{"clips":[{{"start_index":12,"end_index":34,"hook":"A concise natural title","overall":8.2,"reason":"Why the complete moment is valuable"}}]}}
 Return at most {per_chunk} clips for this section. No Markdown and no text outside the JSON object."""
 
 
@@ -1039,7 +1038,13 @@ def ollama_select(data, model, host, min_score, max_clips, min_len, max_len, tim
                 local_start = item.get("start_index")
                 local_end = item.get("end_index")
                 if (isinstance(local_start, bool) or isinstance(local_end, bool)
-                        or not isinstance(local_start, int) or not isinstance(local_end, int)):
+                        or not isinstance(local_start, (int, float))
+                        or not isinstance(local_end, (int, float))
+                        or not float(local_start).is_integer()
+                        or not float(local_end).is_integer()):
+                    continue
+                local_start, local_end = int(local_start), int(local_end)
+                if local_start < 0 or local_end < local_start or local_end >= len(batch):
                     continue
                 window = _normalize_ai_window(
                     sentences, offset + local_start, offset + local_end, min_len, max_len
