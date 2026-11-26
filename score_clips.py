@@ -1181,6 +1181,11 @@ def ollama_select(data, model, host, min_score, max_clips, min_len, max_len, tim
             '{"selected":["C2","C4"]}. Return fewer only when the other candidates are weak.\n\n'
             + "\n\n".join(review_rows)
         )
+        print(
+            f"AI final comparison: reviewing {len(review_pool)} candidates "
+            f"to choose up to {max_clips} distinct clips.",
+            flush=True,
+        )
         try:
             review = call([
                 {"role": "system", "content": "You are the final editor choosing the strongest varied clips."},
