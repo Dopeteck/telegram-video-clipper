@@ -857,8 +857,8 @@ def print_candidate_diagnostics(candidates, selected, min_score, separation, lim
 
 # ------------------------------------------------------------------- ollama
 
-AI_CHUNK_GROUPS = 220
-AI_CHUNK_OVERLAP = 30
+AI_CHUNK_GROUPS = 300
+AI_CHUNK_OVERLAP = 80
 AI_ANSWER_OPENERS = {"yes", "yeah", "yep", "no", "nope", "well", "actually", "because"}
 AI_EDITOR_SYSTEM = """You are an experienced short-form video editor. Your job is to understand the meaning of a real conversation and find genuinely compelling, self-contained moments.
 
@@ -1145,6 +1145,8 @@ def ollama_select(data, model, host, min_score, max_clips, min_len, max_len, tim
     print(f"AI quality gate: selected {len(selected)}/{max_clips} clip(s) "
           f"at or above {min_score:.1f}/10.", flush=True)
     return selected
+
+
 def _nearest(values, t):
     lo, hi = 0, len(values) - 1
     best = 0
