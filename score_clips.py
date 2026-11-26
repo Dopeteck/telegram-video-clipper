@@ -889,7 +889,7 @@ class OllamaHTTPError(RuntimeError):
 
     def __init__(self, status, body):
         self.status = int(status)
-        self.body = re.sub(r"\\s+", " ", str(body or "")).strip()[:800]
+        self.body = re.sub(r"\s+", " ", str(body or "")).strip()[:800]
         detail = self.body or "empty response body"
         super().__init__(f"Ollama HTTP {self.status}: {detail}")
 
@@ -1043,7 +1043,7 @@ def ollama_select(data, model, host, min_score, max_clips, min_len, max_len, tim
         while pending_chunks:
             offset, batch = pending_chunks.pop(0)
             chunk_number = completed_chunks + 1
-            transcript_rows = "\\n".join(
+            transcript_rows = "\n".join(
                 f"[{local_index}] {group['start']:.2f}-{group['end']:.2f}s | "
                 f"{group['text']}"
                 for local_index, group in enumerate(batch)
