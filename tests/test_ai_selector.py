@@ -124,11 +124,14 @@ def test_strict_llm_mode_does_not_silently_fall_back_to_heuristics(tmp_path):
     import pytest
 
     words = [
-        {"word": "We", "start": 0.0, "end": 0.2},
-        {"word": "are", "start": 0.3, "end": 0.5},
-        {"word": "testing", "start": 0.6, "end": 0.9},
-        {"word": "this", "start": 1.0, "end": 1.2},
-        {"word": "now.", "start": 1.3, "end": 1.6},
+        {"word": "First", "start": 0.0, "end": 0.3},
+        {"word": "thought.", "start": 0.4, "end": 0.8},
+        {"word": "Second", "start": 2.0, "end": 2.3},
+        {"word": "point.", "start": 2.4, "end": 2.8},
+        {"word": "Third", "start": 4.0, "end": 4.3},
+        {"word": "example.", "start": 4.4, "end": 4.8},
+        {"word": "Final", "start": 6.0, "end": 6.3},
+        {"word": "thought.", "start": 6.4, "end": 6.8},
     ]
     (tmp_path / "transcript.json").write_text(
         json.dumps({"words": words, "segments": [], "duration": 80, "language": "en"}),
