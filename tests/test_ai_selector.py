@@ -120,6 +120,109 @@ def test_ollama_selector_uses_model_windows_without_calling_heuristic_growth(mon
     assert selected[0]["selection_reasons"]
 
 
+
+def test_ollama_context_limit_splits_large_sections_and_retries(monkeypatch):
+    groups = [
+        _group(f"Complete explanation sentence number {index}.", index * 12, index * 12 + 11)
+        for index in range(8)
+    ]
+    words = [word for group in groups for word in group["words"]]
+    request_sizes = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "message": {
+                    "content": json.dumps({
+                        "clips": [{
+                            "start_index": 0,
+                            "end_index": 5,
+                            "hook": "The complete explanation",
+                            "overall": 8.5,
+                            "reason": "A clear explanation with a complete payoff.",
+                        }]
+                    })
+                }
+            }).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        payload = json.loads(request.data.decode("utf-8"))
+        user_text = payload["messages"][1]["content"]
+        row_count = sum(1 for line in user_text.splitlines() if line.startswith("["))
+        request_sizes.append(row_count)
+        if row_count > 6:
+            import urllib.error
+            from io import BytesIO
+            raise urllib.error.HTTPError(
+                request.full_url,
+                400,
+                "Bad Request",
+                hdrs=None,
+                fp=BytesIO(b'{"error":"the input length exceeds the context length"}'),
+            )
+        return FakeResponse()
+
+    monkeypatch.setattr(score_clips, "AI_CHUNK_GROUPS", 8)
+    monkeypatch.setattr(score_clips, "AI_CHUNK_OVERLAP", 2)
+    monkeypatch.setattr(score_clips, "AI_CONTEXT_MIN_GROUPS", 2)
+    monkeypatch.setattr(score_clips.urllib.request, "urlopen", fake_urlopen)
+
+    selected = score_clips.ollama_select(
+        {"words": words, "segments": [], "duration": 96},
+        "qwen3:4b-instruct-2507-q4_K_M",
+        "http://127.0.0.1:11434",
+        min_score=5.5,
+        max_clips=3,
+        min_len=60,
+        max_len=180,
+    )
+
+    assert request_sizes == [8, 6, 6]
+    assert len(selected) == 2
+
+
+def test_ollama_http_400_reports_the_response_body(monkeypatch, capsys):
+    import urllib.error
+    from io import BytesIO
+
+    groups = [
+        _group("A complete first sentence.", 0, 20),
+        _group("A complete second sentence.", 20.2, 40.2),
+        _group("A complete third sentence.", 40.4, 60.4),
+        _group("A complete final sentence.", 60.6, 80.6),
+    ]
+    words = [word for group in groups for word in group["words"]]
+
+    def fake_urlopen(request, timeout):
+        raise urllib.error.HTTPError(
+            request.full_url,
+            400,
+            "Bad Request",
+            hdrs=None,
+            fp=BytesIO(b'{"error":"unsupported request option"}'),
+        )
+
+    monkeypatch.setattr(score_clips.urllib.request, "urlopen", fake_urlopen)
+    assert score_clips.ollama_select(
+        {"words": words, "segments": [], "duration": 81},
+        "qwen3:4b-instruct-2507-q4_K_M",
+        "http://127.0.0.1:11434",
+        min_score=5.5,
+        max_clips=3,
+        min_len=60,
+        max_len=180,
+    ) is None
+
+    output = capsys.readouterr().out
+    assert "Ollama HTTP 400" in output
+    assert "unsupported request option" in output
+
 def test_strict_llm_mode_does_not_silently_fall_back_to_heuristics(tmp_path):
     import pytest
 
