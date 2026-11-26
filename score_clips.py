@@ -858,7 +858,7 @@ def print_candidate_diagnostics(candidates, selected, min_score, separation, lim
 
 # ------------------------------------------------------------------- ollama
 
-AI_CHUNK_GROUPS = 120
+AI_CHUNK_GROUPS = 180
 AI_CHUNK_OVERLAP = 24
 AI_CONTEXT_MIN_GROUPS = 24
 AI_ANSWER_OPENERS = {"yes", "yeah", "yep", "no", "nope", "well", "actually", "because"}
@@ -1058,11 +1058,16 @@ def ollama_select(data, model, host, min_score, max_clips, min_len, max_len, tim
                 f"Rows below use local indices 0 through {len(batch) - 1}; "
                 f"their times are absolute video timestamps.\n\n{transcript_rows}"
             )
+            print(
+                f"  AI section {chunk_number}/{total_chunks}: "
+                f"sending {len(batch)} sentence groups to Ollama.",
+                flush=True,
+            )
             try:
                 result = call([
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
-                ], num_predict=768)
+                ], num_predict=512)
             except OllamaHTTPError as error:
                 # A transcript section can exceed the model's effective context
                 # even when the model itself starts successfully. Split only that
