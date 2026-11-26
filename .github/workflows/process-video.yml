@@ -389,7 +389,7 @@ jobs:
               "stream": False,
               "format": "json",
               "options": {"num_ctx": 8192, "num_predict": 32},
-              "messages": [{"role": "user", "content": "Return exactly this JSON object and nothing else: {\\\"ready\\\":true}"}],
+              "messages": [{"role": "user", "content": 'Return exactly this JSON object and nothing else: {"ready":true}'}],
           }
           request = urllib.request.Request(
               "http://127.0.0.1:11434/api/chat",
