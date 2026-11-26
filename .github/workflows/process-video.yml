@@ -379,19 +379,29 @@ jobs:
 
           # Make one small real inference now so model startup/availability
           # failures are caught before the long transcription begins.
-          curl --fail --silent --show-error http://127.0.0.1:11434/api/chat \
-            -H 'Content-Type: application/json' \
-            -d "{\"model\":\"$AI_MODEL\",\"stream\":false,\"format\":\"json\",\"options\":{\"num_ctx\":8192,\"num_predict\":32},\"messages\":[{\"role\":\"user\",\"content\":\"Reply with JSON only: {\\\"ready\\\":true}\"}]}" \
-            >/tmp/chopify-ollama-smoke-test.json
           python - <<'PY'
           import json
-          from pathlib import Path
+          import os
+          import urllib.request
 
-          response = json.loads(Path("/tmp/chopify-ollama-smoke-test.json").read_text())
-          content = response.get("message", {}).get("content", "")
-          if not content.strip():
-              raise SystemExit("Ollama returned an empty response during its smoke test.")
-          print(f"Local AI model is ready: {response.get('model', 'unknown model')}")
+          payload = {
+              "model": os.environ["AI_MODEL"],
+              "stream": False,
+              "format": "json",
+              "options": {"num_ctx": 8192, "num_predict": 32},
+              "messages": [{"role": "user", "content": "Reply with JSON only: ready is true."}],
+          }
+          request = urllib.request.Request(
+              "http://127.0.0.1:11434/api/chat",
+              data=json.dumps(payload).encode("utf-8"),
+              headers={"Content-Type": "application/json"},
+          )
+          with urllib.request.urlopen(request, timeout=180) as response:
+              result = json.loads(response.read().decode("utf-8"))
+          content = json.loads(result.get("message", {}).get("content", "{}"))
+          if content.get("ready") is not True:
+              raise SystemExit("Ollama returned an invalid response during its smoke test.")
+          print(f"Local AI model is ready: {result.get('model', 'unknown model')}")
           PY
 
       - name: Report job started
