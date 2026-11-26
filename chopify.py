@@ -96,7 +96,9 @@ def main():
                     help="normalize audio to -14 LUFS (platform standard)")
     ap.add_argument("--llm", nargs="?", const="qwen2.5:7b", default=None,
                     metavar="MODEL",
-                    help="pick clips with a local Ollama model (e.g. qwen2.5:7b)")
+                    help="pick clips with a local Ollama model")
+    ap.add_argument("--strict-llm", action="store_true",
+                    help="fail instead of silently falling back when the requested AI model is unavailable")
     ap.add_argument("--search", default=None, metavar="KEYWORDS",
                     help="skip virality scoring: clip around transcript sentences "
                          "containing ALL keywords (e.g. --search \"pricing\")")
