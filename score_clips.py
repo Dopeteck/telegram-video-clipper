@@ -1053,10 +1053,10 @@ def ollama_select(data, model, host, min_score, max_clips, min_len, max_len, tim
                 per_chunk=per_chunk,
             )
             user = (
-                f"Full video duration: {float(data.get('duration') or 0):.1f} seconds.\\n"
+                f"Full video duration: {float(data.get('duration') or 0):.1f} seconds.\n"
                 f"This is transcript section {chunk_number} of {total_chunks}. "
                 f"Rows below use local indices 0 through {len(batch) - 1}; "
-                f"their times are absolute video timestamps.\\n\\n{transcript_rows}"
+                f"their times are absolute video timestamps.\n\n{transcript_rows}"
             )
             try:
                 result = call([
