@@ -120,12 +120,24 @@ def test_ollama_selector_uses_model_windows_without_calling_heuristic_growth(mon
     assert selected[0]["selection_reasons"]
 
 
-def test_strict_llm_mode_does_not_silently_fall_back_to_heuristics(workdir):
+def test_strict_llm_mode_does_not_silently_fall_back_to_heuristics(tmp_path):
     import pytest
+
+    words = [
+        {"word": "We", "start": 0.0, "end": 0.2},
+        {"word": "are", "start": 0.3, "end": 0.5},
+        {"word": "testing", "start": 0.6, "end": 0.9},
+        {"word": "this", "start": 1.0, "end": 1.2},
+        {"word": "now.", "start": 1.3, "end": 1.6},
+    ]
+    (tmp_path / "transcript.json").write_text(
+        json.dumps({"words": words, "segments": [], "duration": 80, "language": "en"}),
+        encoding="utf-8",
+    )
 
     with pytest.raises(SystemExit, match="Required AI clip selector"):
         score_clips.run(
-            workdir,
+            tmp_path,
             llm="qwen3:4b-instruct-2507-q4_K_M",
             host="http://127.0.0.1:1",
             max_clips=3,
