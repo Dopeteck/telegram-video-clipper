@@ -17,7 +17,7 @@ DEFAULT_OPTIONS = {"aspect": "16:9", "style": "default", "tighten": False,
                    "loudnorm": False, "whisper_model": "medium", "device": "cpu",
                    "language": None,
                    "min_len": 60, "max_len": 180, "max_clips": 10, "min_score": None,
-                   "llm": None, "search": None, "semantic": None,
+                   "llm": None, "strict_llm": False, "search": None, "semantic": None,
                    "embed_model": "nomic-embed-text", "brand": None,
                    "layout": "single", "centers": [0.25, 0.75], "blur_fill": False}
 
@@ -227,7 +227,7 @@ def run_project(path, action="all", preview=False, pick=None, resume=True, progr
                     save_project(path, state)
             stage("score")
             data = read_json(transcript_path)
-            selection = {k: options[k] for k in ("llm", "search", "semantic", "embed_model",
+            selection = {k: options[k] for k in ("llm", "strict_llm", "search", "semantic", "embed_model",
                                                 "min_score", "min_len", "max_len", "max_clips")}
             score_key = digest([transcript_key, data, selection])
             if not resume or state["cache"].get("score") != score_key or not (path / "segments.json").exists():
