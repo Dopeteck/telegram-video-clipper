@@ -25,6 +25,7 @@ import re
 import json
 import argparse
 import urllib.request
+import urllib.error
 import unicodedata
 from pathlib import Path
 
@@ -857,8 +858,9 @@ def print_candidate_diagnostics(candidates, selected, min_score, separation, lim
 
 # ------------------------------------------------------------------- ollama
 
-AI_CHUNK_GROUPS = 300
-AI_CHUNK_OVERLAP = 80
+AI_CHUNK_GROUPS = 120
+AI_CHUNK_OVERLAP = 24
+AI_CONTEXT_MIN_GROUPS = 24
 AI_ANSWER_OPENERS = {"yes", "yeah", "yep", "no", "nope", "well", "actually", "because"}
 AI_EDITOR_SYSTEM = """You are an experienced short-form video editor. Your job is to understand the meaning of a real conversation and find genuinely compelling, self-contained moments.
 
@@ -880,6 +882,27 @@ Each transcript row begins with a zero-based index local to this section, follow
 Return valid JSON only, with this exact shape:
 {{"clips":[{{"start_index":12,"end_index":34,"hook":"A concise natural title","overall":8.2,"reason":"Why the complete moment is valuable"}}]}}
 Return at most {per_chunk} clips for this section. No Markdown and no text outside the JSON object."""
+
+
+class OllamaHTTPError(RuntimeError):
+    """An Ollama HTTP response with its short, safe-to-log error body."""
+
+    def __init__(self, status, body):
+        self.status = int(status)
+        self.body = re.sub(r"\s+", " ", str(body or "")).strip()[:800]
+        detail = self.body or "empty response body"
+        super().__init__(f"Ollama HTTP {self.status}: {detail}")
+
+
+def _is_ollama_context_error(error):
+    """Identify request-size/context failures that can be retried with smaller chunks."""
+    if not isinstance(error, OllamaHTTPError) or error.status != 400:
+        return False
+    detail = error.body.lower()
+    return any(marker in detail for marker in (
+        "context length", "context window", "input length",
+        "too many tokens", "prompt is too long", "exceeds the available context",
+    ))
 
 
 def _parse_ollama_json(content):
@@ -992,8 +1015,14 @@ def ollama_select(data, model, host, min_score, max_clips, min_len, max_len, tim
             host.rstrip("/") + "/api/chat",
             data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            result = json.loads(response.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                result = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            # Ollama's useful explanation is in the HTTP response body; urllib's
+            # default exception string hides it. Never log the request transcript.
+            detail = error.read(2048).decode("utf-8", errors="replace")
+            raise OllamaHTTPError(error.code, detail) from error
         if result.get("error"):
             raise RuntimeError(str(result["error"]))
         return _parse_ollama_json(result.get("message", {}).get("content", ""))
@@ -1007,8 +1036,13 @@ def ollama_select(data, model, host, min_score, max_clips, min_len, max_len, tim
           f"({len(sentences)} sentence groups; {min_len}-{max_len}s target).", flush=True)
 
     candidates = []
+    pending_chunks = list(chunks)
+    total_chunks = len(pending_chunks)
+    completed_chunks = 0
     try:
-        for chunk_number, (offset, batch) in enumerate(chunks, 1):
+        while pending_chunks:
+            offset, batch = pending_chunks.pop(0)
+            chunk_number = completed_chunks + 1
             transcript_rows = "\n".join(
                 f"[{local_index}] {group['start']:.2f}-{group['end']:.2f}s | "
                 f"{group['text']}"
@@ -1020,14 +1054,40 @@ def ollama_select(data, model, host, min_score, max_clips, min_len, max_len, tim
             )
             user = (
                 f"Full video duration: {float(data.get('duration') or 0):.1f} seconds.\n"
-                f"This is transcript section {chunk_number} of {len(chunks)}. "
+                f"This is transcript section {chunk_number} of {total_chunks}. "
                 f"Rows below use local indices 0 through {len(batch) - 1}; "
                 f"their times are absolute video timestamps.\n\n{transcript_rows}"
             )
-            result = call([
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ], num_predict=768)
+            try:
+                result = call([
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ], num_predict=768)
+            except OllamaHTTPError as error:
+                # A transcript section can exceed the model's effective context
+                # even when the model itself starts successfully. Split only that
+                # section, preserve overlap, and retry the smaller requests.
+                if (_is_ollama_context_error(error)
+                        and len(batch) >= 2 * AI_CONTEXT_MIN_GROUPS + 4):
+                    midpoint = len(batch) // 2
+                    overlap = min(12, max(2, len(batch) // 10))
+                    right_start = max(0, midpoint - overlap)
+                    left_end = min(len(batch), midpoint + overlap)
+                    left = batch[:left_end]
+                    right = batch[right_start:]
+                    pending_chunks[0:0] = [
+                        (offset, left),
+                        (offset + right_start, right),
+                    ]
+                    total_chunks += 1
+                    print(
+                        f"  Ollama context limit on section {chunk_number}; "
+                        f"splitting {len(batch)} groups into {len(left)} and "
+                        f"{len(right)} groups, then retrying.",
+                        flush=True,
+                    )
+                    continue
+                raise
             items = result.get("clips", [])
             if not isinstance(items, list):
                 raise ValueError("Ollama 'clips' field was not a list")
@@ -1069,7 +1129,8 @@ def ollama_select(data, model, host, min_score, max_clips, min_len, max_len, tim
                 segment["signals"]["rule_based_support"] = round(local_score, 2)
                 if segment["overall"] >= min_score:
                     candidates.append(segment)
-            print(f"  AI section {chunk_number}/{len(chunks)}: "
+            completed_chunks += 1
+            print(f"  AI section {completed_chunks}/{total_chunks}: "
                   f"{len(candidates) - accepted_before} valid clip candidate(s).", flush=True)
     except Exception as error:  # noqa: BLE001
         print(f"  Ollama AI selection failed ({error}); heuristic fallback is available.", flush=True)
