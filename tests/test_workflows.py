@@ -309,3 +309,23 @@ def test_extract_ytdlp_runtime_is_explicit_and_verified():
     assert "2, 3, 0" in run
     download = next(s for s in steps if s["name"] == "Download YouTube video")["run"]
     assert "'--js-runtimes', 'deno'" in download
+
+
+def test_process_video_runs_a_free_local_ai_model_on_the_github_hosted_runner():
+    workflow = _load("process-video.yml")
+    process = workflow["jobs"]["process"]
+    steps = process["steps"]
+    names = [step["name"] for step in steps]
+    ai_index = names.index("Install and start free local AI selector")
+    chopify_index = names.index("Run Chopify processing")
+    ai_step = steps[ai_index]
+    chopify_step = steps[chopify_index]
+
+    assert process["runs-on"] == "ubuntu-latest"
+    assert process["timeout-minutes"] >= 90
+    assert ai_index < chopify_index
+    assert ai_step["env"]["AI_MODEL"] == "qwen3:4b-instruct-2507-q4_K_M"
+    assert "ollama pull" in ai_step["run"]
+    assert "ollama serve" in ai_step["run"]
+    assert chopify_step["env"]["AI_MODEL"] == ai_step["env"]["AI_MODEL"]
+    assert "'--llm', ai_model, '--strict-llm'" in chopify_step["run"]
