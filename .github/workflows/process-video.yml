@@ -306,7 +306,7 @@ jobs:
   process:
     name: Process video and upload clips
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     # Always runs so non-YouTube jobs (where extract-youtube is skipped) still
     # process, and YouTube jobs whose extraction failed still report failure.
     needs: [extract-youtube]
@@ -345,6 +345,54 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
           pip install requests boto3
+
+      - name: Install and start free local AI selector
+        shell: bash
+        env:
+          AI_MODEL: qwen3:4b-instruct-2507-q4_K_M
+        run: |
+          set -euo pipefail
+          echo "Installing Ollama on the GitHub-hosted runner (not on the user's laptop)..."
+          curl -fsSL https://ollama.com/install.sh | sh
+
+          if ! curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+            nohup ollama serve >/tmp/chopify-ollama.log 2>&1 &
+          fi
+
+          ready=0
+          for attempt in $(seq 1 45); do
+            if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "::error::Ollama did not start on the GitHub-hosted runner."
+            tail -n 80 /tmp/chopify-ollama.log 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "Downloading the free quantized AI model: $AI_MODEL"
+          ollama pull "$AI_MODEL"
+          ollama show "$AI_MODEL" >/dev/null
+
+          # Make one small real inference now so model startup/availability
+          # failures are caught before the long transcription begins.
+          curl --fail --silent --show-error http://127.0.0.1:11434/api/chat \
+            -H 'Content-Type: application/json' \
+            -d "{\"model\":\"$AI_MODEL\",\"stream\":false,\"format\":\"json\",\"options\":{\"num_ctx\":8192,\"num_predict\":32},\"messages\":[{\"role\":\"user\",\"content\":\"Reply with JSON only: {\\\"ready\\\":true}\"}]}" \
+            >/tmp/chopify-ollama-smoke-test.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          response = json.loads(Path("/tmp/chopify-ollama-smoke-test.json").read_text())
+          content = response.get("message", {}).get("content", "")
+          if not content.strip():
+              raise SystemExit("Ollama returned an empty response during its smoke test.")
+          print(f"Local AI model is ready: {response.get('model', 'unknown model')}")
+          PY
 
       - name: Report job started
         shell: bash
@@ -500,6 +548,7 @@ jobs:
           ENABLE_TIGHTEN: ${{ steps.prefs.outputs.enable_tighten }}
           ENABLE_LOUDNORM: ${{ steps.prefs.outputs.enable_loudnorm }}
           JOB_ID: ${{ github.event.client_payload.job_id || github.event.inputs.job_id }}
+          AI_MODEL: qwen3:4b-instruct-2507-q4_K_M
         run: |
           python - <<'PY'
           import os
@@ -513,6 +562,7 @@ jobs:
           enable_tighten = os.environ['ENABLE_TIGHTEN'] == '1'
           enable_loudnorm = os.environ['ENABLE_LOUDNORM'] == '1'
           job_id = os.environ['JOB_ID']
+          ai_model = os.environ['AI_MODEL']
 
           work_dir = f'/tmp/chopify_work_{job_id}'
           os.makedirs(work_dir, exist_ok=True)
@@ -532,6 +582,9 @@ jobs:
               '--min-len', '60',
               '--max-len', '180',
           ]
+          # This is a model-backed editorial pass, not the keyword heuristic.
+          # Strict mode prevents silent fallback to the old selector.
+          cmd += ['--llm', ai_model, '--strict-llm']
           if enable_tighten:
               cmd.append('--tighten')
           if enable_loudnorm:
