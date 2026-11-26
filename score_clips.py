@@ -1288,7 +1288,7 @@ def main():
     args = ap.parse_args()
     run(args.workdir, args.llm, args.host, args.min_score, args.max_clips,
         args.min_len, args.max_len, search=args.search, pick=args.clips,
-        semantic=args.semantic, embed_model=args.embed_model)
+        semantic=args.semantic, embed_model=args.embed_model, strict_llm=args.strict_llm)
     print("SCORING COMPLETE", flush=True)
 
 
