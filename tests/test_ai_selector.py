@@ -184,7 +184,9 @@ def test_ollama_context_limit_splits_large_sections_and_retries(monkeypatch):
     )
 
     assert request_sizes == [8, 6, 6]
-    assert len(selected) == 2
+    # Both chunks returned a candidate, but the global quality gate correctly
+    # keeps only one because the two test windows overlap heavily.
+    assert len(selected) == 1
 
 
 def test_ollama_http_400_reports_the_response_body(monkeypatch, capsys):
