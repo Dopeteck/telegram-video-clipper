@@ -4,15 +4,15 @@ import { generateId } from './utils';
 export class Database {
   constructor(private db: D1Database, private env?: Env) {}
 
-  async createUpload(upload: Omit<Upload, 'id' | 'created_at' | 'updated_at' | 'multipart_upload_id' | 'expires_at' | 'completed_etag' | 'completed_size' | 'error_message'> & { id?: string }): Promise<Upload> {
+  async createUpload(upload: Omit<Upload, 'id' | 'created_at' | 'updated_at' | 'multipart_upload_id' | 'expires_at' | 'completed_etag' | 'completed_size' | 'error_message' | 'upload_type'> & { id?: string; upload_type?: 'video' | 'broll' }): Promise<Upload> {
     const id = upload.id || generateId();
     const now = Date.now();
     const expiryHours = parseInt(this.env?.UPLOAD_EXPIRY_HOURS || '24', 10);
     const expiresAt = now + (expiryHours * 3600 * 1000);
 
     await this.db.prepare(`
-      INSERT INTO uploads (id, telegram_user_id, telegram_chat_id, original_filename, object_key, file_size, mime_type, multipart_upload_id, status, created_at, updated_at, expires_at, completed_etag, completed_size, error_message, source_url)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO uploads (id, telegram_user_id, telegram_chat_id, original_filename, object_key, file_size, mime_type, multipart_upload_id, status, created_at, updated_at, expires_at, completed_etag, completed_size, error_message, source_url, upload_type)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       id,
       upload.telegram_user_id,
@@ -29,7 +29,8 @@ export class Database {
       null, // completed_etag
       null, // completed_size
       null, // error_message
-      upload.source_url || null
+      upload.source_url || null,
+      upload.upload_type || 'video'
     ).run();
 
     const result = await this.getUpload(id);
@@ -71,7 +72,7 @@ export class Database {
 
   async getUserUploads(telegramUserId: number, limit = 50, offset = 0): Promise<Upload[]> {
     const results = await this.db.prepare(`
-      SELECT * FROM uploads WHERE telegram_user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?
+      SELECT * FROM uploads WHERE telegram_user_id = ? AND upload_type = 'video' ORDER BY created_at DESC LIMIT ? OFFSET ?
     `).bind(telegramUserId, limit, offset).all<Upload>();
     return results.results || [];
   }
