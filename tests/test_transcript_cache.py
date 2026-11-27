@@ -3,10 +3,14 @@ import io
 import json
 
 import pytest
-from botocore.exceptions import ClientError
-
 import projects
 import transcript_cache
+
+
+class FakeClientError(Exception):
+    def __init__(self, code):
+        self.response = {"Error": {"Code": code, "Message": "not found"}}
+        super().__init__(code)
 
 
 class MemoryS3:
@@ -21,10 +25,7 @@ class MemoryS3:
         try:
             body = self.objects[(Bucket, Key)]
         except KeyError as error:
-            raise ClientError(
-                {"Error": {"Code": "NoSuchKey", "Message": "not found"}},
-                "GetObject",
-            ) from error
+            raise FakeClientError("NoSuchKey") from error
         return {"Body": io.BytesIO(body)}
 
 
