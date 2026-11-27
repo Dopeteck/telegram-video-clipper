@@ -33,16 +33,30 @@ const BrollLibraryScreen: React.FC<Props> = ({ apiBaseUrl, initData }) => {
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [uploadStatus, setUploadStatus] = useState<string | null>(null);
 
   const apiRequest = useCallback(async (endpoint: string, options: RequestInit = {}) => {
-    const response = await fetch(apiBaseUrl + endpoint, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: 'Bearer ' + initData,
-        ...options.headers,
-      },
-    });
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 30000);
+    let response: Response;
+    try {
+      response = await fetch(apiBaseUrl + endpoint, {
+        ...options,
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer ' + initData,
+          ...options.headers,
+        },
+      });
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new Error('The server request timed out. Check your connection and try again.');
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
     const contentType = response.headers.get('content-type') || '';
     if (!contentType.includes('application/json')) {
       throw new Error('Server error (' + response.status + '). Please try again.');
@@ -81,6 +95,7 @@ const BrollLibraryScreen: React.FC<Props> = ({ apiBaseUrl, initData }) => {
   const upload = async () => {
     setError(null);
     setSuccess(null);
+    setUploadStatus(null);
     if (!file) return setError('Choose a video file first.');
     if (!description.trim()) return setError('Add a short description of what the footage actually shows.');
     if (!sourceUrl.trim()) return setError('Add the original asset/source page URL.');
@@ -90,13 +105,20 @@ const BrollLibraryScreen: React.FC<Props> = ({ apiBaseUrl, initData }) => {
 
     setUploading(true);
     setProgress(0);
+    setUploadStatus('Starting a secure upload...');
     let session: { key: string; uploadId: string } | null = null;
     try {
       const started = await apiRequest('/api/broll/upload/initiate', {
         method: 'POST',
         body: JSON.stringify({ filename: file.name, fileSize: file.size, mimeType: guessedMimeType(file) }),
       });
+      if (!started?.key || !started?.uploadId || !Array.isArray(started.partUrls) ||
+          started.partUrls.length === 0 || !Number.isFinite(Number(started.chunkSize)) ||
+          Number(started.chunkSize) <= 0) {
+        throw new Error('The server returned incomplete upload details. Please refresh the B-roll screen and try again.');
+      }
       session = { key: started.key, uploadId: started.uploadId };
+      setUploadStatus('Uploading video chunks to Cloudflare R2...');
 
       const queue = [...(started.partUrls as PartUrl[])];
       const completed: Array<{ partNumber: number; etag: string }> = [];
@@ -110,11 +132,27 @@ const BrollLibraryScreen: React.FC<Props> = ({ apiBaseUrl, initData }) => {
           if (!part) return;
           const start = (part.partNumber - 1) * chunkSize;
           const blob = file.slice(start, Math.min(start + chunkSize, file.size));
-          const response = await fetch(part.url, {
-            method: 'PUT',
-            body: blob,
-            headers: { 'Content-Type': 'application/octet-stream' },
-          });
+          const controller = new AbortController();
+          const timeoutId = window.setTimeout(() => controller.abort(), 180000);
+          let response: Response;
+          try {
+            response = await fetch(part.url, {
+              method: 'PUT',
+              body: blob,
+              headers: { 'Content-Type': 'application/octet-stream' },
+              signal: controller.signal,
+            });
+          } catch (error) {
+            if (controller.signal.aborted) {
+              throw new Error('Uploading part ' + part.partNumber + ' timed out. Check your connection and retry.');
+            }
+            if (error instanceof TypeError) {
+              throw new Error('Could not reach Cloudflare R2. Check the bucket CORS rules allow this Mini App origin and expose the ETag response header.');
+            }
+            throw error;
+          } finally {
+            window.clearTimeout(timeoutId);
+          }
           if (!response.ok) throw new Error('R2 upload failed on part ' + part.partNumber + ' (' + response.status + ').');
           const etag = response.headers.get('ETag')?.replace(/"/g, '');
           if (!etag) throw new Error('R2 did not return an ETag for part ' + part.partNumber + '. Check the bucket CORS rules.');
@@ -127,6 +165,7 @@ const BrollLibraryScreen: React.FC<Props> = ({ apiBaseUrl, initData }) => {
       await Promise.all(Array.from({ length: Math.min(3, queue.length) }, () => worker()));
       completed.sort((a, b) => a.partNumber - b.partNumber);
 
+      setUploadStatus('Finalising the video and saving it to your library...');
       const result = await apiRequest('/api/broll/upload/complete', {
         method: 'POST',
         body: JSON.stringify({
@@ -144,6 +183,7 @@ const BrollLibraryScreen: React.FC<Props> = ({ apiBaseUrl, initData }) => {
       });
 
       setProgress(100);
+      setUploadStatus('Saved successfully to your B-roll library.');
       setSuccess('Added to your B-roll library. ' + result.assetCount + ' asset(s) are now indexed.');
       setAssets((current) => [...current, result.asset as BrollAsset]);
       setFile(null);
@@ -155,15 +195,19 @@ const BrollLibraryScreen: React.FC<Props> = ({ apiBaseUrl, initData }) => {
       const input = document.getElementById('broll-file-input') as HTMLInputElement | null;
       if (input) input.value = '';
     } catch (e) {
+      const message = e instanceof Error ? e.message : 'B-roll upload failed.';
+      setError(message);
+      setUploadStatus('Upload failed. The asset was not confirmed as saved.');
+      console.error('B-roll upload failed:', e);
+
+      // Do not hold the UI in a loading state while trying to clean up a
+      // failed multipart upload. Cleanup is best-effort and has its own timeout.
       if (session) {
-        try {
-          await apiRequest('/api/broll/upload/abort', {
-            method: 'POST',
-            body: JSON.stringify(session),
-          });
-        } catch { /* The multipart upload may already have completed. */ }
+        void apiRequest('/api/broll/upload/abort', {
+          method: 'POST',
+          body: JSON.stringify(session),
+        }).catch((abortError) => console.warn('B-roll upload cleanup failed:', abortError));
       }
-      setError(e instanceof Error ? e.message : 'B-roll upload failed.');
     } finally {
       setUploading(false);
     }
@@ -185,6 +229,7 @@ const BrollLibraryScreen: React.FC<Props> = ({ apiBaseUrl, initData }) => {
 
       {error && <div className="error-message" role="alert">{error}</div>}
       {success && <div className="success-message" role="status">{success}</div>}
+      {uploadStatus && <div className={uploading ? 'status uploading' : 'status completed'} role="status" aria-live="polite">{uploadStatus}</div>}
 
       <label style={{ display: 'block', marginBottom: 12, fontWeight: 600 }}>
         Video file (MP4, MOV, MKV or WebM)
@@ -225,7 +270,7 @@ const BrollLibraryScreen: React.FC<Props> = ({ apiBaseUrl, initData }) => {
       </label>
 
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-        <button className="btn btn-primary" onClick={upload} disabled={uploading || loading}>
+        <button className="btn btn-primary" onClick={() => { void upload(); }} disabled={uploading}>
           {uploading ? 'Uploading ' + progress + '%...' : 'Upload to B-roll Library'}
         </button>
         <button className="btn btn-secondary" onClick={refreshCatalogue} disabled={uploading || loading}>
