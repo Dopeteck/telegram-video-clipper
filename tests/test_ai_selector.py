@@ -96,8 +96,13 @@ def test_ai_selector_uses_one_global_comparison_and_preserves_candidate_boundari
     ]
     words = [word for group in groups for word in group["words"]]
     candidate = _candidate(0, 79, score=6.4)
-    monkeypatch.setattr(score_clips, "build_candidates",
-                        lambda *args, **kwargs: [candidate])
+
+    def fake_build_candidates(sentences, min_len, max_len, discovery_slots, pool_size=None):
+        assert discovery_slots >= 12
+        assert pool_size >= 48
+        return [candidate]
+
+    monkeypatch.setattr(score_clips, "build_candidates", fake_build_candidates)
     calls = []
 
     def fake_urlopen(request, timeout):
