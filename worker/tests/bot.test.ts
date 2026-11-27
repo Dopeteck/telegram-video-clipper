@@ -73,6 +73,7 @@ describe('TelegramBot', () => {
     TELEGRAM_BOT_TOKEN: 'test_token',
     TELEGRAM_WEBHOOK_SECRET: 'test_secret',
     APP_ORIGIN: 'https://test.example.com',
+    MINIAPP_URL: 'https://test-miniapp.pages.dev',
     DB: mockDB as any,
     R2_BUCKET: {} as any,
     MAX_UPLOAD_BYTES: '2147483648',
@@ -202,7 +203,7 @@ describe('TelegramBot', () => {
     const requestBody = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(requestBody.text).toContain('B-roll Library');
     expect(requestBody.reply_markup.inline_keyboard[0][0].web_app.url)
-      .toBe('undefined/miniapp/upload?mode=broll');
+      .toBe('https://test-miniapp.pages.dev/miniapp/upload?mode=broll');
   });
 
   describe('handleCallbackQuery', () => {
