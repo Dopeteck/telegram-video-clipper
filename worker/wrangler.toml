@@ -16,6 +16,7 @@ MAX_CONCURRENT_UPLOADS_PER_USER = "2"
 RATE_LIMIT_WINDOW_SECONDS = "60"
 RATE_LIMIT_MAX_REQUESTS = "30"
 R2_BUCKET_NAME = "telegram-video-clipper-uploads"
+EDITOR_GITHUB_REPO = "Dopeteck/telegram-video-editor"
 
 [[d1_databases]]
 binding = "DB"

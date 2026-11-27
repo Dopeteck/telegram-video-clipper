@@ -20,6 +20,7 @@ export interface Env {
   R2_SECRET_ACCESS_KEY: string;
   WORKER_SECRET: string;
   BROLL_ALLOWED_TELEGRAM_USER_IDS?: string;
+  EDITOR_GITHUB_REPO?: string;
   GITHUB_TOKEN: string;
   GITHUB_REPO: string;
 }
