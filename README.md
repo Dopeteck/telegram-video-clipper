@@ -190,7 +190,7 @@ npm run dev  # Runs at http://localhost:8787
 
 The B-roll library is part of the **existing Telegram Video Clipper bot, existing Worker and existing webhook**. It does not create another bot, set up a second webhook, or require a new bot token.
 
-After this change is deployed, send `/whoami` to the existing bot and copy the numeric Telegram user ID. In Cloudflare Dashboard → Workers & Pages → `telegram-video-clipper-worker-production` → Settings → Variables, add the plain-text variable `BROLL_ALLOWED_TELEGRAM_USER_IDS` with that ID. Multiple administrator IDs may be comma-separated. The Worker denies library access until an ID is explicitly allowlisted.
+After this change is deployed, send `/whoami` to the existing bot and copy the numeric Telegram user ID. In Cloudflare Dashboard → Workers & Pages → `telegram-video-clipper-worker-production` → Settings → Variables, add the plain-text variable `BROLL_ALLOWED_TELEGRAM_USER_IDS` with that ID. Multiple administrator IDs may be comma-separated. The Worker denies library access until an ID is explicitly allowlisted. The Wrangler config sets `keep_vars = true` so this dashboard-managed plain-text allowlist is retained by later deployments.
 
 Then send `/broll` to open the B-roll Library in the existing Mini App. Uploads use the same authenticated Telegram Mini App session and direct multipart-to-R2 approach as normal uploads, supporting MP4, MOV, MKV and WebM up to the configured upload limit. The original source/asset URL, licence/permission, description, tags and explicit rights confirmation are required before an asset is indexed.
 
