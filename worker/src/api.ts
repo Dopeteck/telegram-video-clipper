@@ -449,6 +449,7 @@ api.get('/upload/status/:uploadId', async (c) => {
   const response: UploadStatusResponse = {
     upload,
     parts,
+    chunkSize: parseInt(c.env.CHUNK_SIZE || '5242880', 10),
     progress: {
       uploadedBytes,
       totalBytes: upload.file_size,
