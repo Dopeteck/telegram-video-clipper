@@ -95,14 +95,6 @@ def test_ai_selector_uses_one_global_comparison_and_preserves_candidate_boundari
         _group("That is why the lesson matters today.", 63.2, 79),
     ]
     words = [word for group in groups for word in group["words"]]
-    candidate = _candidate(0, 79, score=6.4)
-
-    def fake_build_candidates(sentences, min_len, max_len, discovery_slots, pool_size=None):
-        assert discovery_slots >= 12
-        assert pool_size >= 48
-        return [candidate]
-
-    monkeypatch.setattr(score_clips, "build_candidates", fake_build_candidates)
     calls = []
 
     def fake_urlopen(request, timeout):
@@ -112,7 +104,7 @@ def test_ai_selector_uses_one_global_comparison_and_preserves_candidate_boundari
         assert payload["options"]["num_ctx"] == 8192
         assert "final editorial selection" in payload["messages"][0]["content"]
         prompt = payload["messages"][1]["content"]
-        assert "C1 | 0.0-79.0s" in prompt
+        assert re.search(r"C1 \\| 0\\.0-79\\.0s", prompt)
         assert "The founder explains the difficult decision." in prompt
         return _fake_response({
             "selected": [{
@@ -136,12 +128,68 @@ def test_ai_selector_uses_one_global_comparison_and_preserves_candidate_boundari
 
     assert len(calls) == 1
     assert len(selected) == 1
-    assert selected[0]["start"] == candidate["start"]
-    assert selected[0]["end"] == candidate["end"]
+    assert selected[0]["start"] == 0.0
+    assert selected[0]["end"] == 79.0
     assert 60 <= selected[0]["end"] - selected[0]["start"] <= 180
     assert selected[0]["hook"]
     assert selected[0]["signals"]["ai_score"] == 8.7
     assert selected[0]["selection_reasons"]
+
+
+def test_ai_discovery_finds_time_balanced_windows_in_a_long_varied_transcript():
+    # 1,439 sentence groups approximates the failed 48-minute job. Vocabulary
+    # intentionally changes from sentence to sentence; adjacent sentences do
+    # not need to pass the old lexical-overlap continuation heuristic.
+    groups = []
+    for index in range(1439):
+        start = index * 2.02
+        groups.append(_group(
+            f"At chapter {index}, the speaker explains a separate detail number {index}.",
+            start,
+            start + 1.8,
+        ))
+
+    candidates = score_clips._build_ai_discovery_candidates(
+        groups, min_len=60, max_len=180, pool_size=48
+    )
+    review_pool = score_clips._balanced_ai_review_pool(
+        candidates, duration=groups[-1]["end"], limit=9
+    )
+
+    assert len(candidates) >= 40
+    assert len(review_pool) == 9
+    assert all(60 <= item["end"] - item["start"] <= 180 for item in candidates)
+    assert candidates[0]["start"] < 10
+    assert candidates[-1]["end"] > groups[-1]["end"] * 0.85
+    for index, candidate in enumerate(review_pool):
+        assert all(
+            candidate["end"] <= other["start"] - 10
+            or candidate["start"] >= other["end"] + 10
+            for other in review_pool[index + 1:]
+        )
+
+
+def test_ai_discovery_does_not_join_windows_across_a_long_pause():
+    groups = []
+    for index in range(90):
+        start = index * 2.02 + (8.0 if index >= 35 else 0.0)
+        groups.append(_group(
+            f"Sentence {index} describes a new part of the discussion.",
+            start,
+            start + 1.8,
+        ))
+
+    candidates = score_clips._build_ai_discovery_candidates(
+        groups, min_len=60, max_len=180, pool_size=48
+    )
+    pause_start = groups[34]["end"]
+    pause_end = groups[35]["start"]
+
+    assert candidates
+    assert all(
+        not (item["start"] < pause_start and item["end"] > pause_end)
+        for item in candidates
+    )
 
 
 def test_ai_review_pool_spreads_candidates_across_the_timeline_and_avoids_overlap():
@@ -173,7 +221,7 @@ def test_context_limit_retries_with_fewer_whole_candidates(monkeypatch):
         _candidate(index * 90, index * 90 + 60, score=6.2 + index / 10)
         for index in range(8)
     ]
-    monkeypatch.setattr(score_clips, "build_candidates",
+    monkeypatch.setattr(score_clips, "_build_ai_discovery_candidates",
                         lambda *args, **kwargs: candidates)
     request_sizes = []
 
@@ -223,9 +271,6 @@ def test_ollama_http_400_reports_the_response_body_and_returns_none(monkeypatch,
         _group("A complete final sentence.", 60.6, 80.6),
     ]
     words = [word for group in groups for word in group["words"]]
-    monkeypatch.setattr(score_clips, "build_candidates",
-                        lambda *args, **kwargs: [_candidate(0, 80)])
-
     def fake_urlopen(request, timeout):
         raise urllib.error.HTTPError(
             request.full_url,
