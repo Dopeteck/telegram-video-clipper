@@ -154,10 +154,6 @@ export class TelegramBot {
       return this.showUserUploads(chatId, userId);
     }
 
-    if (message.text === '✂️ Edit a Clipped Video') {
-      return this.showEditableClips(chatId, userId);
-    }
-
     if (message.text === '⚙️ Settings') {
       return this.sendMessage(chatId, SETTINGS_MESSAGE, { parse_mode: 'HTML', reply_markup: keyboard });
     }
@@ -460,15 +456,15 @@ export class TelegramBot {
     try {
       const clips = await this.getCompletedClipKeys(userId);
       if (clips.length === 0) {
-        const message = '✂️ <b>AI Video Editor</b>\\n\\nI could not find any completed clips yet. Process a video first, then return here and type /edit.';
+        const message = '✂️ <b>AI Video Editor</b>\n\nI could not find any completed clips yet. Process a video first, then return here and type /edit.';
         if (messageId) return this.editMessage(chatId, messageId, message, { parse_mode: 'HTML' });
         return this.sendMessage(chatId, message, { parse_mode: 'HTML', reply_markup: this.getMainKeyboard() });
       }
-      const keyboard: TelegramInlineKeyboardButton[][] = clips.map((clip, index) => {
+      const keyboard: TelegramInlineKeyboardButton[][] = clips.map((clip) => {
         const filename = clip.key.split('/').pop() || 'Finished clip';
         return [{ text: `✂️ ${filename.slice(0, 48)}`, callback_data: `edit_clip_${clip.jobId}_${clip.clipIndex}` }];
       });
-      const message = '✂️ <b>Choose a finished clip to edit</b>\\n\\nSelect one of your completed clips. The editor creates a separate edited copy and leaves the original untouched.';
+      const message = '✂️ <b>Choose a finished clip to edit</b>\n\nSelect one of your completed clips. The editor creates a separate edited copy and leaves the original untouched.';
       if (messageId) return this.editMessage(chatId, messageId, message, { parse_mode: 'HTML', reply_markup: { inline_keyboard: keyboard } });
       return this.sendMessage(chatId, message, { parse_mode: 'HTML', reply_markup: { inline_keyboard: keyboard } });
     } catch (error) {
@@ -506,14 +502,14 @@ export class TelegramBot {
     if (actionType === 'clip') {
       const filename = clipKey.split('/').pop() || 'finished clip';
       return this.editMessage(chatId, messageId,
-        `<b>Start AI editing?</b>\\n\\nClip: <code>${filename}</code>\\n\\nThe editor will add captions and use matching footage from your rights-cleared B-roll library when suitable. It will not overwrite the original clip.`,
+        `<b>Start AI editing?</b>\n\nClip: <code>${filename}</code>\n\nThe editor will add captions and use matching footage from your rights-cleared B-roll library when suitable. It will not overwrite the original clip.`,
         { parse_mode: 'HTML', reply_markup: { inline_keyboard: [
           [{ text: '🚀 Start editing', callback_data: `edit_confirm_${job.id}_${clipIndex}` }],
           [{ text: '🔙 Choose another clip', callback_data: 'edit_back' }],
         ] } });
     }
 
-    await this.editMessage(chatId, messageId, '⏳ <b>Starting the AI editor...</b>\\n\\nYour original clip will remain unchanged.', { parse_mode: 'HTML' });
+    await this.editMessage(chatId, messageId, '⏳ <b>Starting the AI editor...</b>\n\nYour original clip will remain unchanged.', { parse_mode: 'HTML' });
     const token = this.env.GITHUB_TOKEN;
     const repository = (this.env.EDITOR_GITHUB_REPO || 'Dopeteck/telegram-video-editor').trim();
     if (!token) {
@@ -536,12 +532,12 @@ export class TelegramBot {
         throw new Error(`GitHub returned HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
       }
       return this.editMessage(chatId, messageId,
-        `✅ <b>AI editing started</b>\\n\\nClip: <code>${clipKey.split('/').pop()}</code>\\nThe editor is now running. When finished, it will send the edited video here in Telegram.\\n\\n<a href="https://github.com/${repository}/actions/workflows/edit-clip.yml">View editor progress</a>`,
+        `✅ <b>AI editing started</b>\n\nClip: <code>${clipKey.split('/').pop()}</code>\nThe editor is now running. When finished, it will send the edited video here in Telegram.\n\n<a href="https://github.com/${repository}/actions/workflows/edit-clip.yml">View editor progress</a>`,
         { parse_mode: 'HTML', reply_markup: this.getMainKeyboard() });
     } catch (error) {
       console.error('Editor workflow dispatch failed:', error);
       return this.editMessage(chatId, messageId,
-        `❌ <b>Could not start the editor</b>\\n\\n${error instanceof Error ? error.message : 'Unknown GitHub error'}\\n\\nCheck that the Worker GitHub token has Actions write access to ${repository}.`,
+        `❌ <b>Could not start the editor</b>\n\n${error instanceof Error ? error.message : 'Unknown GitHub error'}\n\nCheck that the Worker GitHub token has Actions write access to ${repository}.`,
         { parse_mode: 'HTML', reply_markup: this.getMainKeyboard() });
     }
   }
