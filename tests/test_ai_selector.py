@@ -104,7 +104,7 @@ def test_ai_selector_uses_one_global_comparison_and_preserves_candidate_boundari
         assert payload["options"]["num_ctx"] == 8192
         assert "final editorial selection" in payload["messages"][0]["content"]
         prompt = payload["messages"][1]["content"]
-        assert re.search(r"C1 \\| 0\\.0-79\\.0s", prompt)
+        assert "C1 | 0.0-79.0s" in prompt
         assert "The founder explains the difficult decision." in prompt
         return _fake_response({
             "selected": [{
