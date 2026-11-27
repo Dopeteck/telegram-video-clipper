@@ -1065,6 +1065,109 @@ def _candidate_transcript(sentences, candidate):
     ).strip()
 
 
+
+def _build_ai_discovery_candidates(sentences, min_len, max_len, pool_size):
+    """Build timeline-spread windows from continuous speech, without lexical-link gates.
+
+    The old discovery path called _grow_window(), which deliberately requires
+    adjacent sentences to share vocabulary. That is useful for heuristic
+    candidates, but too strict for a first-pass AI shortlist: interviews and
+    stories often move between speakers or introduce new vocabulary while the
+    same discussion is still underway.
+
+    This builder uses transcript time, complete sentence boundaries, and real
+    pauses only. It never crosses a natural speech break or the duration limit.
+    Qwen receives the complete text for each window and makes the editorial
+    decision about whether the moment is coherent and worth publishing.
+    """
+    if not sentences or pool_size <= 0 or min_len <= 0 or max_len < min_len:
+        return []
+
+    source_end = max(float(item.get("end", 0)) for item in sentences)
+    eligible = []
+    for index, group in enumerate(sentences):
+        text = str(group.get("text", "")).strip()
+        start = float(group.get("start", 0))
+        if (start <= source_end - min_len
+                and _group_complete(group)
+                and not _opens_dependent(text)
+                and not _ends_dangling(text)):
+            eligible.append((index, start))
+
+    if not eligible:
+        return []
+
+    first_start = eligible[0][1]
+    latest_start = min(source_end - min_len, eligible[-1][1])
+    spacing = max(30.0, float(min_len) * 0.75)
+    sample_count = min(
+        int(pool_size),
+        max(1, int((latest_start - first_start) / spacing) + 1),
+    )
+    if sample_count == 1:
+        target_times = [first_start]
+    else:
+        target_times = [
+            first_start + (latest_start - first_start) * slot / (sample_count - 1)
+            for slot in range(sample_count)
+        ]
+
+    target_duration = min(float(max_len), max(float(min_len), min(105.0, float(min_len) + 30.0)))
+    candidates = []
+    seen_starts = set()
+    eligible_cursor = 0
+
+    for target_time in target_times:
+        while (eligible_cursor < len(eligible)
+               and eligible[eligible_cursor][1] < target_time):
+            eligible_cursor += 1
+        if eligible_cursor >= len(eligible):
+            continue
+
+        start_index = eligible[eligible_cursor][0]
+        if start_index in seen_starts:
+            continue
+        seen_starts.add(start_index)
+
+        start_time = float(sentences[start_index]["start"])
+        last_complete = None
+        for end_index in range(start_index, len(sentences)):
+            current = sentences[end_index]
+            if end_index > start_index and _is_natural_break(
+                    sentences[end_index - 1], current):
+                break
+
+            end_time = float(current["end"])
+            duration = end_time - start_time
+            if duration > max_len:
+                break
+
+            tail = str(current.get("text", "")).strip()
+            is_publishable_end = (
+                duration >= min_len
+                and _group_complete(current)
+                and not _ends_dangling(tail)
+                and not _ends_question(tail)
+            )
+            if is_publishable_end:
+                last_complete = (start_index, end_index)
+                if duration >= target_duration:
+                    break
+
+        if last_complete is None:
+            continue
+
+        start_index, end_index = last_complete
+        segment = _make_segment(sentences, start_index, end_index)
+        duration = float(segment["end"]) - float(segment["start"])
+        if min_len <= duration <= max_len:
+            candidates.append(segment)
+
+    # Candidate windows may overlap during discovery. The balanced review-pool
+    # stage removes overlap while retaining coverage across the full recording.
+    candidates.sort(key=lambda item: item["start"])
+    return candidates
+
 def ollama_select(data, model, host, min_score, max_clips, min_len, max_len, timeout=1800):
     """Use one global AI editorial pass over a broad, timeline-balanced shortlist.
 
@@ -1080,16 +1183,8 @@ def ollama_select(data, model, host, min_score, max_clips, min_len, max_len, tim
 
     discovery_limit = max(AI_DISCOVERY_POOL_SIZE, min(72, max_clips * 16))
     review_limit = min(12, max(6, max_clips * 3))
-    # build_candidates samples four timeline positions per discovery slot.
-    # Use at least 12 slots so the 48-window discovery pool spans the full
-    # recording before rule-based ranking chooses the AI review shortlist.
-    discovery_seed_slots = max(12, max_clips)
-    candidates = build_candidates(
-        sentences,
-        min_len,
-        max_len,
-        discovery_seed_slots,
-        pool_size=discovery_limit,
+    candidates = _build_ai_discovery_candidates(
+        sentences, min_len, max_len, discovery_limit
     )
     print(
         f"AI candidate discovery: {len(candidates)} complete windows from "
