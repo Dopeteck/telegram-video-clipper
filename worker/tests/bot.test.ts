@@ -168,6 +168,8 @@ describe('TelegramBot', () => {
       expect(payload.text).toContain('AI Video Editor');
       expect(payload.text).toContain('\n\nI could not find any completed clips yet');
       expect(payload.text).not.toContain('\\n');
+      const keyboardLabels = payload.reply_markup.keyboard.flat().map((button: { text: string }) => button.text);
+      expect(keyboardLabels).toContain('✂️ Edit a Clipped Video');
     });
 
     it('keeps /broll locked until the Telegram user is allowlisted', async () => {
