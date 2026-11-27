@@ -234,7 +234,7 @@ def test_context_limit_retries_with_fewer_whole_candidates(monkeypatch):
     def fake_urlopen(request, timeout):
         payload = json.loads(request.data.decode("utf-8"))
         user_text = payload["messages"][1]["content"]
-        candidate_count = len(re.findall(r"(?m)^C\\d+ \\|", user_text))
+        candidate_count = len(re.findall(r"(?m)^C\d+ \|", user_text))
         request_sizes.append(candidate_count)
         if candidate_count > 2:
             raise urllib.error.HTTPError(
@@ -296,7 +296,7 @@ def test_ai_selector_reviews_a_second_timeline_batch_after_zero_selections(monke
         call_count += 1
         payload = json.loads(request.data.decode("utf-8"))
         user_text = payload["messages"][1]["content"]
-        match = re.search(r"(?m)^C1 \\| ([0-9.]+)-", user_text)
+        match = re.search(r"(?m)^C1 \| ([0-9.]+)-", user_text)
         assert match
         if call_count == 1:
             return _fake_response({
