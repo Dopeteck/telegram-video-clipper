@@ -40,6 +40,7 @@ export interface Upload {
   completed_size: number | null;
   error_message: string | null;
   source_url?: string | null;
+  upload_type?: 'video' | 'broll';
 }
 
 export interface UploadPart {
