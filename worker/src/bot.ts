@@ -275,6 +275,9 @@ export class TelegramBot {
     if (!upload || upload.telegram_user_id !== userId) {
       return this.editMessage(chatId, messageId, '❌ Upload not found or access denied.');
     }
+    if (upload.upload_type === 'broll') {
+      return this.editMessage(chatId, messageId, '❌ B-roll assets are library footage and cannot be sent to the clipping workflow.');
+    }
 
     switch (actionType) {
       case 'cancel':
