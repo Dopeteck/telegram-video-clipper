@@ -194,17 +194,18 @@ function App({ apiBaseUrl }: AppProps) {
   // state.status === 'ready'
   const user = state.user;
   const initData = state.initData;
+  const uploadMode = new URLSearchParams(window.location.search).get('mode') === 'broll' ? 'broll' : 'video';
 
   return (
     <div className="app">
       <header className="header">
-        <h1>Video Clipper</h1>
+        <h1>{uploadMode === 'broll' ? 'B-roll Library' : 'Video Clipper'}</h1>
         <div className="user-info">
           {user.first_name} {user.last_name || ''}
         </div>
       </header>
       <main className="main">
-        {screen === 'upload' && <UploadScreen apiBaseUrl={apiBaseUrl} initData={initData} uploadId={new URLSearchParams(window.location.search).get('upload_id')} onNavigate={navigate} />}
+        {screen === 'upload' && <UploadScreen apiBaseUrl={apiBaseUrl} initData={initData} uploadId={new URLSearchParams(window.location.search).get('upload_id')} mode={uploadMode} onNavigate={navigate} />}
         {screen === 'uploads' && <UploadsListScreen apiBaseUrl={apiBaseUrl} initData={initData} onNavigate={navigate} />}
         {screen === 'settings' && <SettingsScreen apiBaseUrl={apiBaseUrl} initData={initData} user={user} />}
         {screen === 'help' && <HelpScreen />}
