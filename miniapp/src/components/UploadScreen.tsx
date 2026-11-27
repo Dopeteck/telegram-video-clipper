@@ -25,6 +25,7 @@ interface UploadStatus {
     etag: string | null;
     size: number | null;
   }>;
+  chunkSize: number;
   progress: {
     uploadedBytes: number;
     totalBytes: number;
@@ -193,7 +194,7 @@ const UploadScreen: React.FC<Props> = ({ apiBaseUrl, initData, uploadId: initial
       }
 
       // Restore totalParts and chunkSize from server
-      const chunkSize = parseInt(currentStatus.upload.mime_type || '5242880', 10) || 5242880;
+      const chunkSize = Number(currentStatus.chunkSize) || 5242880;
       const totalParts = Math.ceil(currentStatus.upload.file_size / chunkSize);
       
       uploadStateRef.current.totalParts = totalParts;
