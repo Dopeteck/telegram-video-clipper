@@ -32,10 +32,14 @@ function makeBucket(initial?: string): R2Bucket {
         },
       } as unknown as R2ObjectBody;
     },
-    async put(_key, value, options) {
-      const condition = options?.onlyIf;
-      if (condition && 'etagMatches' in condition && condition.etagMatches !== etag) return null;
-      if (condition && 'etagDoesNotMatch' in condition && condition.etagDoesNotMatch === '*' && etag !== null) return null;
+    async put(
+      _key: string,
+      value: string | ArrayBuffer | ArrayBufferView | ReadableStream | Blob | null,
+      options?: R2PutOptions,
+    ) {
+      const condition = options?.onlyIf as R2Conditional | undefined;
+      if (condition?.etagMatches !== undefined && condition.etagMatches !== etag) return null;
+      if (condition?.etagDoesNotMatch === '*' && etag !== null) return null;
       body = typeof value === 'string' ? value : String(value);
       revision += 1;
       etag = '"etag-' + revision + '"';
