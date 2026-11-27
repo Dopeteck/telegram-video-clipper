@@ -8,6 +8,7 @@ const MAIN_KEYBOARD: TelegramReplyKeyboardMarkup = {
   keyboard: [
     [{ text: '🎬 Upload Video', web_app: { url: '' } }],
     [{ text: '📂 My Uploads' }],
+    [{ text: '✂️ Edit a Clipped Video' }],
     [{ text: '⚙️ Settings' }],
     [{ text: '❓ Help' }],
   ],
@@ -26,13 +27,15 @@ const HELP_MESSAGE = `
 • Resume interrupted uploads
 • Process videos into clips with Chopify
 • Upload rights-cleared B-roll footage for the AI editor
+• Send a finished clip to the separate AI editor from Telegram
 
 <b>How to Use:</b>
 1. Tap <b>🎬 Upload Video</b> to open the Mini App
 2. Select a video from your gallery or record one
 3. Watch the upload progress
 4. Tap "Start Processing" on completed uploads
-5. Receive finished clips in Telegram
+5. Type /edit to choose a finished clip for AI editing
+6. Receive finished clips in Telegram
 
 <b>Supported Formats:</b> MP4, MOV, MKV, WebM, M4V, AVI
 <b>Max File Size:</b> 2 GB
@@ -131,6 +134,10 @@ export class TelegramBot {
       return this.showUserUploads(chatId, userId);
     }
 
+    if (message.text === '/edit' || message.text === '✂️ Edit a Clipped Video') {
+      return this.showEditableClips(chatId, userId);
+    }
+
     if (message.text === '/whoami') {
       return this.sendMessage(chatId, 'Your Telegram user ID is <code>' + userId + '</code>.', { parse_mode: 'HTML' });
     }
@@ -145,6 +152,10 @@ export class TelegramBot {
 
     if (message.text === '📂 My Uploads') {
       return this.showUserUploads(chatId, userId);
+    }
+
+    if (message.text === '✂️ Edit a Clipped Video') {
+      return this.showEditableClips(chatId, userId);
     }
 
     if (message.text === '⚙️ Settings') {
@@ -191,6 +202,9 @@ export class TelegramBot {
         }
         if (data.startsWith('job_')) {
           return this.handleJobAction(chatId, messageId, userId, data);
+        }
+        if (data.startsWith('edit_')) {
+          return this.handleEditAction(chatId, messageId, userId, data);
         }
     }
 
@@ -413,6 +427,121 @@ export class TelegramBot {
     return createApiResponse(true, { ok: true });
   }
 
+  private async getCompletedClipKeys(userId: number): Promise<Array<{ jobId: string; key: string }>> {
+    const jobs = await this.db.getUserJobs(userId, 20, 0);
+    const clips: Array<{ jobId: string; key: string }> = [];
+    for (const job of jobs) {
+      if (job.status !== 'completed') continue;
+      let keys: string[] = [];
+      try {
+        keys = job.clips_json ? JSON.parse(job.clips_json) : [];
+      } catch {
+        console.error(`Invalid clips_json for completed job ${job.id}`);
+      }
+      if (!Array.isArray(keys) || keys.length === 0) {
+        const listed = await this.env.R2_BUCKET.list({ prefix: `jobs/${job.id}/`, limit: 20 });
+        keys = listed.objects.map((object) => object.key);
+      }
+      for (const key of keys) {
+        if (typeof key === 'string' && key.startsWith(`jobs/${job.id}/`) &&
+            key.split('/').length === 3 && key.toLowerCase().endsWith('.mp4')) {
+          clips.push({ jobId: job.id, key });
+        }
+      }
+      if (clips.length >= 10) break;
+    }
+    return clips.slice(0, 10);
+  }
+
+  private async showEditableClips(chatId: number, userId: number, messageId?: number): Promise<ApiResponse> {
+    try {
+      const clips = await this.getCompletedClipKeys(userId);
+      if (clips.length === 0) {
+        const message = '✂️ <b>AI Video Editor</b>\\n\\nI could not find any completed clips yet. Process a video first, then return here and type /edit.';
+        if (messageId) return this.editMessage(chatId, messageId, message, { parse_mode: 'HTML' });
+        return this.sendMessage(chatId, message, { parse_mode: 'HTML', reply_markup: this.getMainKeyboard() });
+      }
+      const keyboard: TelegramInlineKeyboardButton[][] = clips.map((clip, index) => {
+        const filename = clip.key.split('/').pop() || 'Finished clip';
+        return [{ text: `✂️ ${filename.slice(0, 48)}`, callback_data: `edit_clip_${clip.jobId}_${index}` }];
+      });
+      const message = '✂️ <b>Choose a finished clip to edit</b>\\n\\nSelect one of your completed clips. The editor creates a separate edited copy and leaves the original untouched.';
+      if (messageId) return this.editMessage(chatId, messageId, message, { parse_mode: 'HTML', reply_markup: { inline_keyboard: keyboard } });
+      return this.sendMessage(chatId, message, { parse_mode: 'HTML', reply_markup: { inline_keyboard: keyboard } });
+    } catch (error) {
+      console.error('Could not list finished clips for editor:', error);
+      return this.sendMessage(chatId, '❌ I could not load your finished clips. Please try /edit again in a moment.');
+    }
+  }
+
+  private async handleEditAction(chatId: number, messageId: number, userId: number, action: string): Promise<ApiResponse> {
+    const parts = action.split('_');
+    const actionType = parts[1];
+    const clipIndex = Number(parts[parts.length - 1]);
+    const jobId = parts.slice(2, -1).join('_');
+    if (!['clip', 'confirm'].includes(actionType) || !jobId || !Number.isInteger(clipIndex) || clipIndex < 0) {
+      return this.editMessage(chatId, messageId, '❌ Invalid editor selection.');
+    }
+
+    const job = await this.db.getJob(jobId);
+    if (!job || job.telegram_user_id !== userId || job.status !== 'completed') {
+      return this.editMessage(chatId, messageId, '❌ This clip is unavailable or does not belong to your account.');
+    }
+
+    let keys: string[] = [];
+    try { keys = job.clips_json ? JSON.parse(job.clips_json) : []; } catch { keys = []; }
+    if (!Array.isArray(keys) || keys.length === 0) {
+      const listed = await this.env.R2_BUCKET.list({ prefix: `jobs/${job.id}/`, limit: 20 });
+      keys = listed.objects.map((object) => object.key);
+    }
+    const clipKey = keys[clipIndex];
+    if (typeof clipKey !== 'string' || !clipKey.startsWith(`jobs/${job.id}/`) ||
+        clipKey.split('/').length !== 3 || !clipKey.toLowerCase().endsWith('.mp4')) {
+      return this.editMessage(chatId, messageId, '❌ I could not verify that clip. Please run /edit again.');
+    }
+
+    if (actionType === 'clip') {
+      const filename = clipKey.split('/').pop() || 'finished clip';
+      return this.editMessage(chatId, messageId,
+        `<b>Start AI editing?</b>\\n\\nClip: <code>${filename}</code>\\n\\nThe editor will add captions and use matching footage from your rights-cleared B-roll library when suitable. It will not overwrite the original clip.`,
+        { parse_mode: 'HTML', reply_markup: { inline_keyboard: [
+          [{ text: '🚀 Start editing', callback_data: `edit_confirm_${job.id}_${clipIndex}` }],
+          [{ text: '🔙 Choose another clip', callback_data: 'edit_back' }],
+        ] } });
+    }
+
+    await this.editMessage(chatId, messageId, '⏳ <b>Starting the AI editor...</b>\\n\\nYour original clip will remain unchanged.', { parse_mode: 'HTML' });
+    const token = this.env.GITHUB_TOKEN;
+    const repository = (this.env.EDITOR_GITHUB_REPO || 'Dopeteck/telegram-video-editor').trim();
+    if (!token) {
+      return this.editMessage(chatId, messageId, '❌ Editor dispatch is not configured. The Worker is missing its GitHub token.');
+    }
+    try {
+      const response = await fetch(`https://api.github.com/repos/${repository}/actions/workflows/edit-clip.yml/dispatches`, {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/vnd.github+json',
+          'Authorization': `Bearer ${token}`,
+          'X-GitHub-Api-Version': '2022-11-28',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ ref: 'main', inputs: { clip_key: clipKey, catalog_key: 'broll/catalog.json', whisper_model: 'small' } }),
+      });
+      if (!response.ok) {
+        const detail = (await response.text()).slice(0, 300);
+        throw new Error(`GitHub returned HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
+      }
+      return this.editMessage(chatId, messageId,
+        `✅ <b>AI editing started</b>\\n\\nClip: <code>${clipKey.split('/').pop()}</code>\\nThe editor is now running. When finished, it will send the edited video here in Telegram.\\n\\n<a href="https://github.com/${repository}/actions/workflows/edit-clip.yml">View editor progress</a>`,
+        { parse_mode: 'HTML', reply_markup: this.getMainKeyboard() });
+    } catch (error) {
+      console.error('Editor workflow dispatch failed:', error);
+      return this.editMessage(chatId, messageId,
+        `❌ <b>Could not start the editor</b>\\n\\n${error instanceof Error ? error.message : 'Unknown GitHub error'}\\n\\nCheck that the Worker GitHub token has Actions write access to ${repository}.`,
+        { parse_mode: 'HTML', reply_markup: this.getMainKeyboard() });
+    }
+  }
+
   private async showBrollLibrary(chatId: number, userId: number): Promise<ApiResponse> {
     const allowedIds = (this.env.BROLL_ALLOWED_TELEGRAM_USER_IDS || '').split(',').map((value) => value.trim()).filter(Boolean);
     if (!allowedIds.includes(String(userId))) {
@@ -578,6 +707,7 @@ export class TelegramBot {
       { command: 'help', description: 'Show help message' },
       { command: 'settings', description: 'Configure processing preferences' },
       { command: 'uploads', description: 'View your upload history' },
+      { command: 'edit', description: 'Edit one of your finished clips' },
       { command: 'broll', description: 'Upload footage to the B-roll library' },
       { command: 'whoami', description: 'Show your Telegram user ID' },
     ];
