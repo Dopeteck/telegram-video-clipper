@@ -3,6 +3,7 @@ import UploadScreen from './components/UploadScreen';
 import UploadsListScreen from './components/UploadsListScreen';
 import SettingsScreen from './components/SettingsScreen';
 import HelpScreen from './components/HelpScreen';
+import BrollLibraryScreen from './components/BrollLibraryScreen';
 
 interface TelegramUser {
   id: number;
@@ -56,7 +57,7 @@ declare global {
   }
 }
 
-type Screen = 'upload' | 'uploads' | 'settings' | 'help';
+type Screen = 'upload' | 'uploads' | 'settings' | 'help' | 'broll';
 
 type NavigateFn = (screen: Screen) => void;
 
@@ -73,7 +74,7 @@ type AppState =
 
 function App({ apiBaseUrl }: AppProps) {
   const [state, setState] = useState<AppState>({ status: 'loading' });
-  const [screen, setScreen] = useState<Screen>('upload');
+  const [screen, setScreen] = useState<Screen>(() => new URLSearchParams(window.location.search).get('mode') === 'broll' ? 'broll' : 'upload');
 
   useEffect(() => {
     let mounted = true;
@@ -198,7 +199,7 @@ function App({ apiBaseUrl }: AppProps) {
   return (
     <div className="app">
       <header className="header">
-        <h1>Video Clipper</h1>
+        <h1>{screen === 'broll' ? 'B-roll Library' : 'Video Clipper'}</h1>
         <div className="user-info">
           {user.first_name} {user.last_name || ''}
         </div>
@@ -208,11 +209,16 @@ function App({ apiBaseUrl }: AppProps) {
         {screen === 'uploads' && <UploadsListScreen apiBaseUrl={apiBaseUrl} initData={initData} onNavigate={navigate} />}
         {screen === 'settings' && <SettingsScreen apiBaseUrl={apiBaseUrl} initData={initData} user={user} />}
         {screen === 'help' && <HelpScreen />}
+        {screen === 'broll' && <BrollLibraryScreen apiBaseUrl={apiBaseUrl} initData={initData} />}
       </main>
       <nav className="bottom-nav">
         <button className={screen === 'upload' ? 'active' : ''} onClick={() => navigate('upload')}>
           <span className="icon">🎬</span>
           <span>Upload</span>
+        </button>
+        <button className={screen === 'broll' ? 'active' : ''} onClick={() => navigate('broll')}>
+          <span className="icon">🎞</span>
+          <span>B-roll</span>
         </button>
         <button className={screen === 'uploads' ? 'active' : ''} onClick={() => navigate('uploads')}>
           <span className="icon">📂</span>

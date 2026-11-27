@@ -3,6 +3,7 @@ import { Env, ApiResponse, PresignedUrlResponse, InitiateMultipartResponse, Comp
 import { validateTelegramInitData, createApiResponse, generateId, sanitizeFilename, validateMimeType, validateFileExtension, getExtensionFromMimeType, safeEqual } from './utils';
 import { Database } from './db';
 import { R2Uploader } from './r2';
+import { appendBrollAsset } from './broll';
 
 type ApiVariables = {
   telegramUser: TelegramUser;
@@ -284,6 +285,178 @@ api.post('/upload/abort', async (c) => {
   await db.deleteUploadParts(uploadId);
 
   return c.json(createApiResponse(true, { ok: true }));
+});
+
+
+const BROLL_CATALOG_KEY = 'broll/catalog.json';
+const BROLL_ALLOWED_SUFFIXES = new Set(['.mp4', '.mov', '.mkv', '.webm']);
+
+function isBrollAuthorized(env: Env, telegramUserId: number): boolean {
+  const allowedIds = (env.BROLL_ALLOWED_TELEGRAM_USER_IDS || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter((value) => /^\d+$/.test(value));
+  return allowedIds.includes(String(telegramUserId));
+}
+
+function isValidHttpUrl(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length > 2048) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' || url.protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
+
+api.get('/broll/catalog', async (c) => {
+  const user = c.get('telegramUser');
+  if (!isBrollAuthorized(c.env, user.id)) {
+    return c.json(createApiResponse(false, undefined, 'B-roll library access is not enabled for this Telegram account.'), 403);
+  }
+  const object = await c.env.R2_BUCKET.get(BROLL_CATALOG_KEY);
+  if (!object) return c.json(createApiResponse(true, { assets: [] }));
+  try {
+    const catalogue = JSON.parse(await object.text());
+    if (!catalogue || !Array.isArray(catalogue.assets)) {
+      return c.json(createApiResponse(false, undefined, 'The B-roll catalogue has an invalid format.'), 500);
+    }
+    return c.json(createApiResponse(true, catalogue));
+  } catch (error) {
+    console.error('Could not read B-roll catalogue:', error);
+    return c.json(createApiResponse(false, undefined, 'The B-roll catalogue is not valid JSON.'), 500);
+  }
+});
+
+api.post('/broll/upload/initiate', async (c) => {
+  const user = c.get('telegramUser');
+  if (!isBrollAuthorized(c.env, user.id)) {
+    return c.json(createApiResponse(false, undefined, 'B-roll library access is not enabled for this Telegram account.'), 403);
+  }
+  let body: Record<string, unknown>;
+  try { body = await c.req.json(); } catch {
+    return c.json(createApiResponse(false, undefined, 'Invalid JSON body'), 400);
+  }
+  const filename = typeof body.filename === 'string' ? body.filename.trim() : '';
+  const fileSize = Number(body.fileSize);
+  const mimeType = typeof body.mimeType === 'string' ? body.mimeType.toLowerCase() : '';
+  const extension = filename.includes('.') ? filename.slice(filename.lastIndexOf('.')).toLowerCase() : '';
+  const maxSize = parseInt(c.env.MAX_UPLOAD_BYTES || '2147483648', 10);
+  if (!filename || filename.length > 255 || !Number.isSafeInteger(fileSize) || fileSize <= 0) {
+    return c.json(createApiResponse(false, undefined, 'Provide a valid video filename and file size.'), 400);
+  }
+  if (!BROLL_ALLOWED_SUFFIXES.has(extension) || !validateMimeType(mimeType)) {
+    return c.json(createApiResponse(false, undefined, 'B-roll files must be MP4, MOV, MKV or WebM.'), 400);
+  }
+  if (fileSize > maxSize) {
+    return c.json(createApiResponse(false, undefined, 'B-roll file exceeds the configured 2 GB upload limit.'), 400);
+  }
+  const chunkSize = Math.max(5 * 1024 * 1024, parseInt(c.env.CHUNK_SIZE || '5242880', 10));
+  const totalParts = Math.ceil(fileSize / chunkSize);
+  if (totalParts > 10000) {
+    return c.json(createApiResponse(false, undefined, 'The video requires too many upload parts.'), 400);
+  }
+  const key = 'broll/uploads/' + user.id + '/' + generateId() + '-' + sanitizeFilename(filename);
+  const r2 = new R2Uploader(c.env);
+  try {
+    const initiated = await r2.initiateMultipartUpload(key, mimeType, totalParts);
+    return c.json(createApiResponse(true, {
+      key,
+      uploadId: initiated.uploadId,
+      totalParts,
+      chunkSize,
+      partUrls: initiated.partUrls,
+    }));
+  } catch (error) {
+    console.error('B-roll multipart upload initiation failed:', error);
+    return c.json(createApiResponse(false, undefined, 'Could not start the B-roll upload.'), 500);
+  }
+});
+
+api.post('/broll/upload/complete', async (c) => {
+  const user = c.get('telegramUser');
+  if (!isBrollAuthorized(c.env, user.id)) {
+    return c.json(createApiResponse(false, undefined, 'B-roll library access is not enabled for this Telegram account.'), 403);
+  }
+  let body: Record<string, unknown>;
+  try { body = await c.req.json(); } catch {
+    return c.json(createApiResponse(false, undefined, 'Invalid JSON body'), 400);
+  }
+  const key = typeof body.key === 'string' ? body.key : '';
+  const uploadId = typeof body.uploadId === 'string' ? body.uploadId : '';
+  const fileSize = Number(body.fileSize);
+  const filename = typeof body.filename === 'string' ? body.filename.trim() : '';
+  const description = typeof body.description === 'string' ? body.description.trim().slice(0, 500) : '';
+  const sourceUrl = body.sourceUrl;
+  const licence = typeof body.licence === 'string' ? body.licence.trim().slice(0, 500) : '';
+  const tags = Array.isArray(body.tags)
+    ? body.tags.filter((tag): tag is string => typeof tag === 'string').map((tag) => tag.trim().toLowerCase()).filter(Boolean).slice(0, 20)
+    : [];
+  const rawParts = Array.isArray(body.parts) ? body.parts : [];
+  if (!key.startsWith('broll/uploads/' + user.id + '/') || key.split('/').length !== 4 || key.includes('..') || !uploadId) {
+    return c.json(createApiResponse(false, undefined, 'Invalid B-roll upload reference.'), 400);
+  }
+  if (!Number.isSafeInteger(fileSize) || fileSize <= 0 || !filename || !description || !licence || !isValidHttpUrl(sourceUrl) || body.rightsConfirmed !== true) {
+    return c.json(createApiResponse(false, undefined, 'Complete the description, tags, source URL and licence, then confirm that you have the rights to use this footage.'), 400);
+  }
+  const extension = filename.includes('.') ? filename.slice(filename.lastIndexOf('.')).toLowerCase() : '';
+  if (!BROLL_ALLOWED_SUFFIXES.has(extension)) {
+    return c.json(createApiResponse(false, undefined, 'Unsupported B-roll file extension.'), 400);
+  }
+  const chunkSize = Math.max(5 * 1024 * 1024, parseInt(c.env.CHUNK_SIZE || '5242880', 10));
+  const totalParts = Math.ceil(fileSize / chunkSize);
+  const parts = rawParts
+    .filter((part: any) => part && Number.isInteger(part.partNumber) && part.partNumber >= 1 && part.partNumber <= totalParts && typeof part.etag === 'string' && part.etag.length > 0)
+    .map((part: any) => ({ partNumber: part.partNumber as number, etag: part.etag as string }));
+  const uniqueParts = new Set(parts.map((part) => part.partNumber));
+  if (parts.length !== totalParts || uniqueParts.size !== totalParts) {
+    return c.json(createApiResponse(false, undefined, 'The upload is incomplete. Please retry the upload.'), 400);
+  }
+  parts.sort((a, b) => a.partNumber - b.partNumber);
+  const r2 = new R2Uploader(c.env);
+  try {
+    const completed = await r2.completeMultipartUpload({ key, uploadId, parts });
+    if (completed.size !== fileSize) {
+      return c.json(createApiResponse(false, undefined, 'Uploaded file size verification failed.'), 400);
+    }
+    const asset = {
+      id: 'broll_' + generateId().slice(0, 24),
+      key,
+      description,
+      tags,
+      source_url: sourceUrl,
+      license: licence,
+      rights_verified: true,
+    };
+    const assetCount = await appendBrollAsset(c.env.R2_BUCKET, asset);
+    return c.json(createApiResponse(true, { asset, assetCount, size: completed.size }));
+  } catch (error) {
+    console.error('B-roll upload completion/catalogue update failed:', error);
+    return c.json(createApiResponse(false, undefined, 'The video uploaded, but the B-roll catalogue could not be updated. Check the catalogue before retrying the same file.'), 500);
+  }
+});
+
+api.post('/broll/upload/abort', async (c) => {
+  const user = c.get('telegramUser');
+  if (!isBrollAuthorized(c.env, user.id)) {
+    return c.json(createApiResponse(false, undefined, 'B-roll library access is not enabled for this Telegram account.'), 403);
+  }
+  let body: Record<string, unknown>;
+  try { body = await c.req.json(); } catch {
+    return c.json(createApiResponse(false, undefined, 'Invalid JSON body'), 400);
+  }
+  const key = typeof body.key === 'string' ? body.key : '';
+  const uploadId = typeof body.uploadId === 'string' ? body.uploadId : '';
+  if (!key.startsWith('broll/uploads/' + user.id + '/') || key.split('/').length !== 4 || key.includes('..') || !uploadId) {
+    return c.json(createApiResponse(false, undefined, 'Invalid B-roll upload reference.'), 400);
+  }
+  try {
+    await new R2Uploader(c.env).abortMultipartUpload(key, uploadId);
+    return c.json(createApiResponse(true, { aborted: true }));
+  } catch (error) {
+    console.error('B-roll multipart upload abort failed:', error);
+    return c.json(createApiResponse(false, undefined, 'Could not cancel the B-roll upload.'), 500);
+  }
 });
 
 api.get('/upload/status/:uploadId', async (c) => {
