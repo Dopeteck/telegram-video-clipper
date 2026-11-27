@@ -1080,11 +1080,15 @@ def ollama_select(data, model, host, min_score, max_clips, min_len, max_len, tim
 
     discovery_limit = max(AI_DISCOVERY_POOL_SIZE, min(72, max_clips * 16))
     review_limit = min(16, max(8, max_clips * 4))
+    # build_candidates samples four timeline positions per discovery slot.
+    # Use at least 12 slots so the 48-window discovery pool spans the full
+    # recording before rule-based ranking chooses the AI review shortlist.
+    discovery_seed_slots = max(12, max_clips)
     candidates = build_candidates(
         sentences,
         min_len,
         max_len,
-        max_clips,
+        discovery_seed_slots,
         pool_size=discovery_limit,
     )
     print(
@@ -1136,10 +1140,8 @@ def ollama_select(data, model, host, min_score, max_clips, min_len, max_len, tim
     try:
         while review_pool:
             review_rows = []
-            by_id = {}
             for index, candidate in enumerate(review_pool, 1):
                 candidate_id = f"C{index}"
-                by_id[candidate_id] = candidate
                 excerpt = _candidate_transcript(sentences, candidate)
                 review_rows.append(
                     f"{candidate_id} | {float(candidate['start']):.1f}-"
