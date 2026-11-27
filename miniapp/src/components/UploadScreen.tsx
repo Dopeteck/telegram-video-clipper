@@ -567,7 +567,9 @@ const UploadScreen: React.FC<Props> = ({ apiBaseUrl, initData, uploadId: initial
         </p>
         <input
           type="file"
-          accept="video/*"
+          accept={isBrollMode
+            ? '.mp4,.mov,.mkv,.webm,video/mp4,video/quicktime,video/x-matroska,video/webm'
+            : 'video/*'}
           onChange={handleFileSelect}
           style={{ display: 'none' }}
           id="fileInput"
@@ -577,7 +579,7 @@ const UploadScreen: React.FC<Props> = ({ apiBaseUrl, initData, uploadId: initial
           {isBrollMode ? '📁 Choose B-roll footage' : '📁 Choose Video'}
         </label>
         <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 12, textAlign: 'center' }}>
-          Supported: MP4, MOV, MKV, WebM, M4V, AVI • Max 2 GB
+          {isBrollMode ? 'B-roll formats: MP4, MOV, MKV, WebM • Max 2 GB' : 'Supported: MP4, MOV, MKV, WebM, M4V, AVI • Max 2 GB'}
         </p>
       </div>
     );
