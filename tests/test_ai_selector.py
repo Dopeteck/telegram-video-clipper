@@ -1,7 +1,12 @@
 """Tests for the model-backed, context-aware clip selector."""
 import json
+import re
 import sys
+import urllib.error
+from io import BytesIO
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import score_clips
@@ -21,9 +26,33 @@ def _group(text, start, end, complete=True):
     }
 
 
+def _candidate(start, end, score=6.0, hook="A useful moment"):
+    return {
+        "start": float(start),
+        "end": float(end),
+        "hook": hook,
+        "overall": float(score),
+        "signals": {"transcript": float(score)},
+    }
+
+
+def _fake_response(body):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "message": {"content": json.dumps(body)}
+            }).encode("utf-8")
+
+    return FakeResponse()
+
+
 def test_ai_window_accepts_a_complete_moment_without_lexical_sentence_links():
-    # The model has judged these unrelated-sounding sentences as one coherent
-    # story/explanation. Boundary validation must not re-run the old lexical gate.
     groups = [
         _group("The founder describes the first difficult decision.", 0, 19),
         _group("Customer numbers fell for three consecutive months.", 19.2, 39.2),
@@ -57,7 +86,7 @@ def test_ai_window_enforces_the_requested_duration():
     assert score_clips._normalize_ai_window(groups, 0, 1, 60, 180) is None
 
 
-def test_ollama_selector_uses_model_windows_without_calling_heuristic_growth(monkeypatch):
+def test_ai_selector_uses_one_global_comparison_and_preserves_candidate_boundaries(monkeypatch):
     groups = [
         _group("The founder explains the difficult decision.", 0, 15),
         _group("Customers reacted in a way nobody expected.", 15.2, 31),
@@ -66,43 +95,30 @@ def test_ollama_selector_uses_model_windows_without_calling_heuristic_growth(mon
         _group("That is why the lesson matters today.", 63.2, 79),
     ]
     words = [word for group in groups for word in group["words"]]
-    response_body = {
-        "message": {
-            "content": json.dumps({
-                "clips": [{
-                    "start_index": 0,
-                    "end_index": 4,
-                    "hook": "The decision that changed everything",
-                    "overall": 8.7,
-                    "reason": "A complete cause, consequence and payoff.",
-                }]
-            })
-        }
-    }
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def read(self):
-            return json.dumps(response_body).encode("utf-8")
+    candidate = _candidate(0, 79, score=6.4)
+    monkeypatch.setattr(score_clips, "build_candidates",
+                        lambda *args, **kwargs: [candidate])
+    calls = []
 
     def fake_urlopen(request, timeout):
         payload = json.loads(request.data.decode("utf-8"))
+        calls.append(payload)
         assert payload["model"] == "qwen3:4b-instruct-2507-q4_K_M"
         assert payload["options"]["num_ctx"] == 8192
-        assert "Think like an editor, not a keyword scanner" in payload["messages"][0]["content"]
-        return FakeResponse()
+        assert "final editorial selection" in payload["messages"][0]["content"]
+        prompt = payload["messages"][1]["content"]
+        assert "C1 | 0.0-79.0s" in prompt
+        assert "The founder explains the difficult decision." in prompt
+        return _fake_response({
+            "selected": [{
+                "id": "C1",
+                "overall": 8.7,
+                "hook": "The decision that changed everything",
+                "reason": "A complete cause, consequence and payoff.",
+            }]
+        })
 
     monkeypatch.setattr(score_clips.urllib.request, "urlopen", fake_urlopen)
-
-    def forbidden_growth(*args, **kwargs):
-        raise AssertionError("AI-selected clips must not be passed through _grow_window")
-
-    monkeypatch.setattr(score_clips, "_grow_window", forbidden_growth)
     selected = score_clips.ollama_select(
         {"words": words, "segments": [], "duration": 80},
         "qwen3:4b-instruct-2507-q4_K_M",
@@ -113,68 +129,73 @@ def test_ollama_selector_uses_model_windows_without_calling_heuristic_growth(mon
         max_len=180,
     )
 
+    assert len(calls) == 1
     assert len(selected) == 1
+    assert selected[0]["start"] == candidate["start"]
+    assert selected[0]["end"] == candidate["end"]
     assert 60 <= selected[0]["end"] - selected[0]["start"] <= 180
     assert selected[0]["hook"]
     assert selected[0]["signals"]["ai_score"] == 8.7
     assert selected[0]["selection_reasons"]
 
 
+def test_ai_review_pool_spreads_candidates_across_the_timeline_and_avoids_overlap():
+    candidates = [
+        _candidate(start, start + 70, score=9.0 - index * 0.1)
+        for index, start in enumerate(range(0, 800, 100))
+    ]
+    pool = score_clips._balanced_ai_review_pool(candidates, duration=900, limit=4)
 
-def test_ollama_context_limit_splits_large_sections_and_retries(monkeypatch):
+    assert len(pool) == 4
+    starts = [item["start"] for item in pool]
+    assert starts == [0.0, 200.0, 400.0, 600.0]
+    for index, candidate in enumerate(pool):
+        assert all(
+            candidate["end"] <= other["start"] - 10
+            or candidate["start"] >= other["end"] + 10
+            for other in pool[index + 1:]
+        )
+
+
+def test_context_limit_retries_with_fewer_whole_candidates(monkeypatch):
     groups = [
-        _group(f"Complete explanation sentence number {index}.", index * 12, index * 12 + 11)
-        for index in range(8)
+        _group(f"Story section {index} explains an important complete point.", index * 10, index * 10 + 9)
+        for index in range(81)
     ]
     words = [word for group in groups for word in group["words"]]
+    candidates = [
+        _candidate(index * 90, index * 90 + 60, score=6.2 + index / 10)
+        for index in range(8)
+    ]
+    monkeypatch.setattr(score_clips, "build_candidates",
+                        lambda *args, **kwargs: candidates)
     request_sizes = []
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def read(self):
-            return json.dumps({
-                "message": {
-                    "content": json.dumps({
-                        "clips": [{
-                            "start_index": 0,
-                            "end_index": 5,
-                            "hook": "The complete explanation",
-                            "overall": 8.5,
-                            "reason": "A clear explanation with a complete payoff.",
-                        }]
-                    })
-                }
-            }).encode("utf-8")
 
     def fake_urlopen(request, timeout):
         payload = json.loads(request.data.decode("utf-8"))
         user_text = payload["messages"][1]["content"]
-        row_count = sum(1 for line in user_text.splitlines() if line.startswith("["))
-        request_sizes.append(row_count)
-        if row_count > 6:
-            import urllib.error
-            from io import BytesIO
+        candidate_count = len(re.findall(r"(?m)^C\d+ \|", user_text))
+        request_sizes.append(candidate_count)
+        if candidate_count > 4:
             raise urllib.error.HTTPError(
                 request.full_url,
                 400,
                 "Bad Request",
                 hdrs=None,
-                fp=BytesIO(b'{"error":"the input length exceeds the context length"}'),
+                fp=BytesIO(b'{"error":"prompt is too long for the available context"}'),
             )
-        return FakeResponse()
+        return _fake_response({
+            "selected": [{
+                "id": "C1",
+                "overall": 8.5,
+                "hook": "The complete explanation",
+                "reason": "A clear explanation with a complete payoff.",
+            }]
+        })
 
-    monkeypatch.setattr(score_clips, "AI_CHUNK_GROUPS", 8)
-    monkeypatch.setattr(score_clips, "AI_CHUNK_OVERLAP", 2)
-    monkeypatch.setattr(score_clips, "AI_CONTEXT_MIN_GROUPS", 2)
     monkeypatch.setattr(score_clips.urllib.request, "urlopen", fake_urlopen)
-
     selected = score_clips.ollama_select(
-        {"words": words, "segments": [], "duration": 96},
+        {"words": words, "segments": [], "duration": 810},
         "qwen3:4b-instruct-2507-q4_K_M",
         "http://127.0.0.1:11434",
         min_score=5.5,
@@ -183,16 +204,12 @@ def test_ollama_context_limit_splits_large_sections_and_retries(monkeypatch):
         max_len=180,
     )
 
-    assert request_sizes == [8, 6, 6]
-    # Both chunks returned a candidate, but the global quality gate correctly
-    # keeps only one because the two test windows overlap heavily.
+    assert request_sizes == [8, 4]
     assert len(selected) == 1
+    assert selected[0]["start"] == candidates[0]["start"]
 
 
-def test_ollama_http_400_reports_the_response_body(monkeypatch, capsys):
-    import urllib.error
-    from io import BytesIO
-
+def test_ollama_http_400_reports_the_response_body_and_returns_none(monkeypatch, capsys):
     groups = [
         _group("A complete first sentence.", 0, 20),
         _group("A complete second sentence.", 20.2, 40.2),
@@ -200,6 +217,8 @@ def test_ollama_http_400_reports_the_response_body(monkeypatch, capsys):
         _group("A complete final sentence.", 60.6, 80.6),
     ]
     words = [word for group in groups for word in group["words"]]
+    monkeypatch.setattr(score_clips, "build_candidates",
+                        lambda *args, **kwargs: [_candidate(0, 80)])
 
     def fake_urlopen(request, timeout):
         raise urllib.error.HTTPError(
@@ -225,9 +244,8 @@ def test_ollama_http_400_reports_the_response_body(monkeypatch, capsys):
     assert "Ollama HTTP 400" in output
     assert "unsupported request option" in output
 
-def test_strict_llm_mode_does_not_silently_fall_back_to_heuristics(tmp_path):
-    import pytest
 
+def test_strict_llm_mode_does_not_silently_fall_back_to_heuristics(tmp_path, monkeypatch):
     words = [
         {"word": "First", "start": 0.0, "end": 0.3},
         {"word": "thought.", "start": 0.4, "end": 0.8},
@@ -242,12 +260,12 @@ def test_strict_llm_mode_does_not_silently_fall_back_to_heuristics(tmp_path):
         json.dumps({"words": words, "segments": [], "duration": 80, "language": "en"}),
         encoding="utf-8",
     )
+    monkeypatch.setattr(score_clips, "ollama_select", lambda *args, **kwargs: None)
 
     with pytest.raises(SystemExit, match="Required AI clip selector"):
         score_clips.run(
             tmp_path,
             llm="qwen3:4b-instruct-2507-q4_K_M",
-            host="http://127.0.0.1:1",
             max_clips=3,
             min_len=5,
             max_len=40,
