@@ -641,6 +641,7 @@ export class TelegramBot {
       keyboard: [
         [{ text: '🎬 Upload Video', web_app: { url: `${this.miniappUrl}/miniapp/upload` } }],
         [{ text: '📂 My Uploads' }],
+        [{ text: '✂️ Edit a Clipped Video' }],
         [{ text: '🎞 B-roll Library', web_app: { url: this.miniappUrl + '/miniapp/upload?mode=broll' } }],
         [{ text: '⚙️ Settings' }],
         [{ text: '❓ Help' }],
