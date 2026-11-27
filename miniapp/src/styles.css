@@ -488,3 +488,26 @@ body {
 .error-content .btn {
   margin-top: 16px;
 }
+.error-message {
+  background: rgba(244, 67, 54, 0.1);
+  color: var(--error);
+  border: 1px solid rgba(244, 67, 54, 0.35);
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  margin: 12px 0;
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.success-message {
+  background: rgba(76, 175, 80, 0.1);
+  color: #217a32;
+  border: 1px solid rgba(76, 175, 80, 0.35);
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  margin: 12px 0;
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
