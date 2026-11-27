@@ -860,7 +860,7 @@ def print_candidate_diagnostics(candidates, selected, min_score, separation, lim
 
 AI_ANSWER_OPENERS = {"yes", "yeah", "yep", "no", "nope", "well", "actually", "because"}
 AI_DISCOVERY_POOL_SIZE = 48
-AI_REVIEW_POOL_SIZE = 12
+AI_REVIEW_POOL_SIZE = 9
 AI_REVIEW_MIN_SEPARATION = 10.0
 AI_REVIEW_SYSTEM = """You are an experienced short-form video editor making the final editorial selection.
 
@@ -1079,7 +1079,7 @@ def ollama_select(data, model, host, min_score, max_clips, min_len, max_len, tim
         return None
 
     discovery_limit = max(AI_DISCOVERY_POOL_SIZE, min(72, max_clips * 16))
-    review_limit = min(16, max(8, max_clips * 4))
+    review_limit = min(12, max(6, max_clips * 3))
     # build_candidates samples four timeline positions per discovery slot.
     # Use at least 12 slots so the 48-window discovery pool spans the full
     # recording before rule-based ranking chooses the AI review shortlist.
