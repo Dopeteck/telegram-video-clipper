@@ -6,8 +6,6 @@ import math
 import re
 from pathlib import Path
 
-from botocore.exceptions import ClientError
-
 
 CACHE_PREFIX = "transcript-cache/v1"
 
@@ -96,8 +94,9 @@ def restore_transcript(video_path, work_dir, s3_client, bucket, options,
     key = transcript_cache_key(source_hash, model_size, device, language)
     try:
         response = s3_client.get_object(Bucket=bucket, Key=key)
-    except ClientError as error:
-        code = str((error.response.get("Error") or {}).get("Code", ""))
+    except Exception as error:  # boto3 is optional outside the processing workflow
+        response_data = getattr(error, "response", {}) or {}
+        code = str((response_data.get("Error") or {}).get("Code", ""))
         if code in {"NoSuchKey", "NotFound", "404"}:
             return {"hit": False, "source_sha256": source_hash, "key": key,
                     "reason": "no cached transcript for this source"}
