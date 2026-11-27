@@ -25,6 +25,7 @@ const HELP_MESSAGE = `
 • Track upload progress in real-time
 • Resume interrupted uploads
 • Process videos into clips with Chopify
+• Add licensed footage to the AI editor's B-roll library with /broll
 
 <b>How to Use:</b>
 1. Tap <b>🎬 Upload Video</b> to open the Mini App
@@ -116,6 +117,21 @@ export class TelegramBot {
 
     if (message.text === '/start') {
       return this.sendWelcomeMessage(chatId, userId);
+    }
+
+    if (message.text === '/broll' || message.text === '🎞️ B-roll Library') {
+      return this.sendMessage(
+        chatId,
+        '🎞️ <b>B-roll Library</b>\n\nUpload background footage directly to your private R2 library. Files are uploaded in resumable chunks, then you add a description, tags, original source and licence details. Nothing is published until you confirm the usage rights.',
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [[
+              { text: '📤 Upload B-roll', web_app: { url: `${this.miniappUrl}/miniapp/upload?mode=broll` } },
+            ]],
+          },
+        }
+      );
     }
 
     if (message.text === '/help') {
@@ -258,6 +274,9 @@ export class TelegramBot {
     const upload = await this.db.getUpload(uploadId);
     if (!upload || upload.telegram_user_id !== userId) {
       return this.editMessage(chatId, messageId, '❌ Upload not found or access denied.');
+    }
+    if (upload.upload_type === 'broll') {
+      return this.editMessage(chatId, messageId, '❌ B-roll assets are library footage and cannot be sent to the clipping workflow.');
     }
 
     switch (actionType) {
@@ -490,6 +509,7 @@ export class TelegramBot {
     return {
       keyboard: [
         [{ text: '🎬 Upload Video', web_app: { url: `${this.miniappUrl}/miniapp/upload` } }],
+        [{ text: '🎞️ B-roll Library', web_app: { url: `${this.miniappUrl}/miniapp/upload?mode=broll` } }],
         [{ text: '📂 My Uploads' }],
         [{ text: '⚙️ Settings' }],
         [{ text: '❓ Help' }],
@@ -555,7 +575,8 @@ export class TelegramBot {
       { command: 'start', description: 'Start the bot and show main menu' },
       { command: 'help', description: 'Show help message' },
       { command: 'settings', description: 'Configure processing preferences' },
-      { command: 'uploads', description: 'View your upload history' },
+      { command: 'uploads', description: 'View your video upload history' },
+      { command: 'broll', description: 'Upload footage to the AI B-roll library' },
     ];
     const response = await fetch(`https://api.telegram.org/bot${this.botToken}/setMyCommands`, {
       method: 'POST',

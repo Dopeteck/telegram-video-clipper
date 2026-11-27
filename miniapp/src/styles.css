@@ -488,3 +488,12 @@ body {
 .error-content .btn {
   margin-top: 16px;
 }
+
+/* B-roll metadata form */
+.form-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+}

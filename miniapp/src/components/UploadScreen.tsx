@@ -25,6 +25,7 @@ interface UploadStatus {
     etag: string | null;
     size: number | null;
   }>;
+  chunkSize: number;
   progress: {
     uploadedBytes: number;
     totalBytes: number;
@@ -38,10 +39,12 @@ interface Props {
   apiBaseUrl: string;
   initData: string;
   uploadId: string | null;
+  mode?: 'video' | 'broll';
   onNavigate: (screen: Screen) => void;
 }
 
-const UploadScreen: React.FC<Props> = ({ apiBaseUrl, initData, uploadId: initialUploadId, onNavigate }) => {
+const UploadScreen: React.FC<Props> = ({ apiBaseUrl, initData, uploadId: initialUploadId, mode = 'video', onNavigate }) => {
+  const isBrollMode = mode === 'broll';
   const [uploadId, setUploadId] = useState<string | null>(initialUploadId);
   const [status, setStatus] = useState<UploadStatus | null>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -50,6 +53,13 @@ const UploadScreen: React.FC<Props> = ({ apiBaseUrl, initData, uploadId: initial
   const [completed, setCompleted] = useState(false);
   const [youtubeUrl, setYoutubeUrl] = useState('');
   const [youtubeImporting, setYoutubeImporting] = useState(false);
+  const [brollDescription, setBrollDescription] = useState('');
+  const [brollTags, setBrollTags] = useState('');
+  const [brollSourceUrl, setBrollSourceUrl] = useState('');
+  const [brollLicense, setBrollLicense] = useState('');
+  const [rightsConfirmed, setRightsConfirmed] = useState(false);
+  const [brollPublishing, setBrollPublishing] = useState(false);
+  const [brollPublished, setBrollPublished] = useState(false);
   
   const abortControllerRef = useRef<AbortController | null>(null);
   const uploadStateRef = useRef({
@@ -147,7 +157,7 @@ const UploadScreen: React.FC<Props> = ({ apiBaseUrl, initData, uploadId: initial
     setError(null);
 
     try {
-      const data = await apiRequest('/api/upload/initiate', {
+      const data = await apiRequest(isBrollMode ? '/api/broll/upload/initiate' : '/api/upload/initiate', {
         method: 'POST',
         body: JSON.stringify({
           filename: file.name,
@@ -184,7 +194,7 @@ const UploadScreen: React.FC<Props> = ({ apiBaseUrl, initData, uploadId: initial
       }
 
       // Restore totalParts and chunkSize from server
-      const chunkSize = parseInt(currentStatus.upload.mime_type || '5242880', 10) || 5242880;
+      const chunkSize = Number(currentStatus.chunkSize) || 5242880;
       const totalParts = Math.ceil(currentStatus.upload.file_size / chunkSize);
       
       uploadStateRef.current.totalParts = totalParts;
@@ -346,11 +356,49 @@ const UploadScreen: React.FC<Props> = ({ apiBaseUrl, initData, uploadId: initial
       setCompleted(true);
       setUploading(false);
       const tg = window.Telegram?.WebApp;
-      if (tg) tg.close();
+      if (tg && !isBrollMode) tg.close();
     } catch (e) {
       state.completing = false;
       setError(e instanceof Error ? e.message : 'Failed to complete upload');
       setUploading(false);
+    }
+  };
+
+  const publishBroll = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!uploadId) {
+      setError('Missing uploaded B-roll file. Please start the upload again.');
+      return;
+    }
+    const tags = [...new Set(brollTags.split(',').map((tag) => tag.trim().toLowerCase()).filter(Boolean))];
+    if (!rightsConfirmed) {
+      setError('Please confirm that you checked the footage usage rights.');
+      return;
+    }
+    if (tags.length === 0) {
+      setError('Add at least one tag, separated by commas.');
+      return;
+    }
+
+    setBrollPublishing(true);
+    setError(null);
+    try {
+      await apiRequest('/api/broll/publish', {
+        method: 'POST',
+        body: JSON.stringify({
+          uploadId,
+          description: brollDescription,
+          tags,
+          source_url: brollSourceUrl,
+          license: brollLicense,
+          rights_confirmed: true,
+        }),
+      });
+      setBrollPublished(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not add B-roll to the library');
+    } finally {
+      setBrollPublishing(false);
     }
   };
 
@@ -384,6 +432,91 @@ const UploadScreen: React.FC<Props> = ({ apiBaseUrl, initData, uploadId: initial
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
+  if (completed && isBrollMode) {
+    if (brollPublished) {
+      return (
+        <div className="card" style={{ textAlign: 'center' }}>
+          <div style={{ fontSize: 48, marginBottom: 16 }}>✅</div>
+          <h2 style={{ marginBottom: 8 }}>B-roll added to your library!</h2>
+          <p style={{ color: 'var(--text-secondary)', marginBottom: 24 }}>
+            The footage is now registered in broll/catalog.json and can be selected by the AI editor when it matches a clip.
+          </p>
+          <button className="btn btn-primary" onClick={() => window.location.reload()}>
+            Upload another B-roll
+          </button>
+        </div>
+      );
+    }
+
+    return (
+      <div className="card">
+        <div style={{ fontSize: 36, marginBottom: 12, textAlign: 'center' }}>✅</div>
+        <h2 className="card-title">B-roll uploaded — add its details</h2>
+        <p style={{ color: 'var(--text-secondary)', marginBottom: 16 }}>
+          Your file is safely in R2 staging. Add accurate information so the AI editor can find the right shot. It will not enter the library until you confirm the rights.
+        </p>
+        <form onSubmit={publishBroll}>
+          <label className="form-label" htmlFor="brollDescription">What is visibly happening in this footage?</label>
+          <textarea
+            id="brollDescription"
+            value={brollDescription}
+            onChange={(e) => setBrollDescription(e.target.value)}
+            placeholder="Example: Close-up of a person scrolling through a social media feed on a smartphone."
+            maxLength={500}
+            minLength={12}
+            required
+            rows={4}
+            style={{ width: '100%', marginBottom: 14 }}
+          />
+          <label className="form-label" htmlFor="brollTags">Tags (comma-separated)</label>
+          <input
+            id="brollTags"
+            value={brollTags}
+            onChange={(e) => setBrollTags(e.target.value)}
+            placeholder="technology, smartphone, social media, scrolling"
+            required
+            style={{ width: '100%', marginBottom: 14 }}
+          />
+          <label className="form-label" htmlFor="brollSourceUrl">Original source webpage</label>
+          <input
+            id="brollSourceUrl"
+            type="url"
+            value={brollSourceUrl}
+            onChange={(e) => setBrollSourceUrl(e.target.value)}
+            placeholder="https://www.pexels.com/video/..."
+            required
+            style={{ width: '100%', marginBottom: 14 }}
+          />
+          <label className="form-label" htmlFor="brollLicense">Licence or permission</label>
+          <input
+            id="brollLicense"
+            value={brollLicense}
+            onChange={(e) => setBrollLicense(e.target.value)}
+            placeholder="Pexels License — commercial use permitted"
+            minLength={8}
+            maxLength={300}
+            required
+            style={{ width: '100%', marginBottom: 14 }}
+          />
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, margin: '8px 0 18px', fontSize: 13, lineHeight: 1.45 }}>
+            <input
+              type="checkbox"
+              checked={rightsConfirmed}
+              onChange={(e) => setRightsConfirmed(e.target.checked)}
+              required
+              style={{ marginTop: 3 }}
+            />
+            I have checked the original licence or permission and confirm that it allows the intended commercial video-editing use.
+          </label>
+          <button className="btn btn-primary" type="submit" disabled={brollPublishing}>
+            {brollPublishing ? 'Adding to library...' : '✅ Confirm and add to B-roll library'}
+          </button>
+        </form>
+        {error && <div className="error">{error}</div>}
+      </div>
+    );
+  }
+
   if (completed) {
     return (
       <div className="card" style={{ textAlign: 'center' }}>
@@ -402,46 +535,52 @@ const UploadScreen: React.FC<Props> = ({ apiBaseUrl, initData, uploadId: initial
   if (!uploadId && !file) {
     return (
       <div className="card">
-        <h2 className="card-title">Import from YouTube</h2>
-        <p style={{ color: 'var(--text-secondary)', marginBottom: 12 }}>
+        {!isBrollMode && <h2 className="card-title">Import from YouTube</h2>}
+        {!isBrollMode && <p style={{ color: 'var(--text-secondary)', marginBottom: 12 }}>
           Paste a public YouTube video link. The video will be sent to the clipping workflow for processing.
-        </p>
-        <input
-          type="url"
-          value={youtubeUrl}
-          onChange={(e) => setYoutubeUrl(e.target.value)}
-          placeholder="https://www.youtube.com/watch?v=..."
-          aria-label="YouTube video URL"
-          autoComplete="off"
-          disabled={youtubeImporting}
-          style={{ width: '100%', marginBottom: 12 }}
-        />
-        <button className="btn btn-primary" onClick={importYouTubeVideo} disabled={youtubeImporting || !youtubeUrl.trim()}>
-          {youtubeImporting ? 'Importing video...' : '▶ Import YouTube Video'}
-        </button>
-        {error && <div className="error">{error}</div>}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '20px 0', color: 'var(--text-secondary)', fontSize: 12 }}>
+        </p>}
+        {!isBrollMode && <>
+          <input
+            type="url"
+            value={youtubeUrl}
+            onChange={(e) => setYoutubeUrl(e.target.value)}
+            placeholder="https://www.youtube.com/watch?v=..."
+            aria-label="YouTube video URL"
+            autoComplete="off"
+            disabled={youtubeImporting}
+            style={{ width: '100%', marginBottom: 12 }}
+          />
+          <button className="btn btn-primary" onClick={importYouTubeVideo} disabled={youtubeImporting || !youtubeUrl.trim()}>
+            {youtubeImporting ? 'Importing video...' : '▶ Import YouTube Video'}
+          </button>
+          {error && <div className="error">{error}</div>}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '20px 0', color: 'var(--text-secondary)', fontSize: 12 }}>
           <div style={{ flex: 1, height: 1, background: 'var(--border-color, #ddd)' }} />
           OR UPLOAD A FILE
-          <div style={{ flex: 1, height: 1, background: 'var(--border-color, #ddd)' }} />
-        </div>
-        <h2 className="card-title">Upload Video</h2>
+            <div style={{ flex: 1, height: 1, background: 'var(--border-color, #ddd)' }} />
+          </div>
+        </>}
+        <h2 className="card-title">{isBrollMode ? 'Upload B-roll footage' : 'Upload Video'}</h2>
         <p style={{ color: 'var(--text-secondary)', marginBottom: 16 }}>
-          Select a video from your device to upload it directly to secure cloud storage.
+          {isBrollMode
+            ? 'Select a background or cutaway video. It will upload directly to your B-roll library in Cloudflare R2.'
+            : 'Select a video from your device to upload it directly to secure cloud storage.'}
         </p>
         <input
           type="file"
-          accept="video/*"
+          accept={isBrollMode
+            ? '.mp4,.mov,.mkv,.webm,video/mp4,video/quicktime,video/x-matroska,video/webm'
+            : 'video/*'}
           onChange={handleFileSelect}
           style={{ display: 'none' }}
           id="fileInput"
           ref={(el) => { if (el) el.click(); }}
         />
         <label htmlFor="fileInput" className="btn btn-primary">
-          📁 Choose Video
+          {isBrollMode ? '📁 Choose B-roll footage' : '📁 Choose Video'}
         </label>
         <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 12, textAlign: 'center' }}>
-          Supported: MP4, MOV, MKV, WebM, M4V, AVI • Max 2 GB
+          {isBrollMode ? 'B-roll formats: MP4, MOV, MKV, WebM • Max 2 GB' : 'Supported: MP4, MOV, MKV, WebM, M4V, AVI • Max 2 GB'}
         </p>
       </div>
     );
@@ -450,7 +589,7 @@ const UploadScreen: React.FC<Props> = ({ apiBaseUrl, initData, uploadId: initial
   if (file && !uploadId) {
     return (
       <div className="card">
-        <h2 className="card-title">Ready to Upload</h2>
+        <h2 className="card-title">{isBrollMode ? 'Ready to add B-roll' : 'Ready to Upload'}</h2>
         <div className="file-info">
           <div className="file-name">{file.name}</div>
           <div className="file-meta">
@@ -458,7 +597,7 @@ const UploadScreen: React.FC<Props> = ({ apiBaseUrl, initData, uploadId: initial
           </div>
         </div>
         <button className="btn btn-primary" onClick={initiateUpload} disabled={uploading}>
-          {uploading ? 'Preparing...' : '🚀 Start Upload'}
+          {uploading ? 'Preparing...' : isBrollMode ? '🚀 Upload B-roll to R2' : '🚀 Start Upload'}
         </button>
         {error && <div className="error">{error}</div>}
       </div>

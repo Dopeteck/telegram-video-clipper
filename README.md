@@ -121,6 +121,18 @@ CLI single-video runs save state under `work/` and copy the latest exports to `c
 
 Successful stages resume by default. Use `--no-resume` to reprocess, or `--project projects/<id> --action render` to retry a batch project. Use `--action render` after manual caption/clip edits; `--action prepare` recalculates candidates when selection inputs change. A failed batch job does not prevent later videos from processing; the CLI exits nonzero if any job fails.
 
+## AI editor B-roll library
+
+The existing Telegram bot also has a **🎞️ B-roll Library** option (or the `/broll` command). It opens the same Mini App in B-roll mode and reuses the existing authenticated, resumable multipart R2 uploader, including its current 2 GB upload limit.
+
+- B-roll assets are stored separately under `broll/uploads/<telegram-user-id>/...`.
+- After upload, the Mini App collects a visible-content description, tags, original source webpage, and licence/permission details.
+- The owner must confirm that the rights were checked before an asset is appended to `broll/catalog.json`.
+- Library assets are recorded with `rights_verified: true` only after that confirmation.
+- B-roll uploads have their own D1 `upload_type` and are excluded from normal video upload history and the clipping workflow. They are not sent to Chopify.
+
+The B-roll uploader uses the **existing bot, existing webhook, existing Cloudflare Worker, existing Mini App, and existing R2 bucket**. It does not create another Telegram bot or modify the video-clipping workflow.
+
 ## Telegram Mini App & Cloudflare Worker
 
 ### Quick Start (requires Cloudflare account)
