@@ -1266,20 +1266,20 @@ def ollama_select(data, model, host, min_score, max_clips, min_len, max_len, tim
                         f"{candidate_id} | {float(candidate['start']):.1f}-"
                         f"{float(candidate['end']):.1f}s | "
                         f"{float(candidate['end']) - float(candidate['start']):.1f}s | "
-                        f"local support={float(candidate.get('overall', 0)):.1f}/10\\n"
+                        f"local support={float(candidate.get('overall', 0)):.1f}/10\n"
                         f"TRANSCRIPT: {excerpt}"
                     )
 
                 review_prompt = (
-                    f"Full source duration: {float(data.get('duration') or 0):.1f} seconds.\\n"
-                    f"Required clip duration: {min_len}-{max_len} seconds.\\n"
-                    f"Minimum blended quality threshold: {min_score:.1f}/10.\\n"
+                    f"Full source duration: {float(data.get('duration') or 0):.1f} seconds.\n"
+                    f"Required clip duration: {min_len}-{max_len} seconds.\n"
+                    f"Minimum blended quality threshold: {min_score:.1f}/10.\n"
                     f"Evaluate all {len(batch)} candidates below. Return a score and decision "
                     "for every candidate, including rejected ones. Each transcript is the "
                     "complete text inside its fixed candidate boundaries. Judge setup, "
                     "development and payoff; do not reward a dramatic opening if the rest "
-                    "does not deliver.\\n\\n"
-                    + "\\n\\n".join(review_rows)
+                    "does not deliver.\n\n"
+                    + "\n\n".join(review_rows)
                 )
                 print(
                     f"AI editorial comparison: reviewing {len(batch)} "
@@ -1353,7 +1353,7 @@ def ollama_select(data, model, host, min_score, max_clips, min_len, max_len, tim
                 local_score = float(candidate.get("overall", 0))
                 blended_score = round(0.82 * model_score + 0.18 * local_score, 1)
                 reason = re.sub(
-                    r"\\s+", " ",
+                    r"\s+", " ",
                     str(item.get("reason") or "No editorial reason supplied")
                 ).strip()[:160]
 
@@ -1398,7 +1398,7 @@ def ollama_select(data, model, host, min_score, max_clips, min_len, max_len, tim
                 break
 
     except Exception as error:  # noqa: BLE001
-        print(f"  Ollama AI selection failed ({error}); heuristic fallback is available.", flush=True)
+        print(f"  Ollama AI selection failed ({error}); no unverified clip selection will be used.", flush=True)
         return None
 
     # Keep the strongest distinct choices from both review requests.
