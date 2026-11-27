@@ -858,31 +858,23 @@ def print_candidate_diagnostics(candidates, selected, min_score, separation, lim
 
 # ------------------------------------------------------------------- ollama
 
-AI_CHUNK_GROUPS = 180
-AI_CHUNK_OVERLAP = 24
-AI_CONTEXT_MIN_GROUPS = 24
 AI_ANSWER_OPENERS = {"yes", "yeah", "yep", "no", "nope", "well", "actually", "because"}
-AI_EDITOR_SYSTEM = """You are an experienced short-form video editor. Your job is to understand the meaning of a real conversation and find genuinely compelling, self-contained moments.
+AI_DISCOVERY_POOL_SIZE = 48
+AI_REVIEW_POOL_SIZE = 9
+AI_REVIEW_MIN_SEPARATION = 10.0
+AI_REVIEW_SYSTEM = """You are an experienced short-form video editor making the final editorial selection.
 
-Think like an editor, not a keyword scanner. Recognize complete personal stories, surprising revelations, useful explanations, strong opinions, disagreements, emotional turns, funny exchanges, practical lessons, and questions followed by satisfying answers. A clip can be compelling without any obvious viral catchphrase. Follow pronouns, callbacks, cause and effect, and the context between speakers.
+Compare only the supplied candidate moments. Each candidate is already a complete, bounded clip with a natural start and ending. Its timestamp boundaries are fixed: never invent, adjust, combine, or split candidates.
 
-For each chosen clip:
-- Include enough setup for a new viewer to understand what is happening.
-- Start at a natural opening, not halfway through a sentence or answer.
-- Keep the complete story, explanation, exchange, or point through its payoff.
-- End at a natural conclusion. Do not end on an unanswered question, unfinished sentence, or dangling phrase.
-- The duration MUST be between {min_len} and {max_len} seconds, inclusive.
-- Prefer a strong 1–3 minute moment over a short sound bite. Never pad a weak moment just to reach the minimum.
-- Avoid greetings, introductions, housekeeping, repeated points, long dead air, sponsor reads, and generic sign-offs unless they contain an unusually strong moment.
-- Choose different moments from this transcript section. Do not invent words, facts, or timestamps.
-- Only return a clip when its standalone value is at least {min_score}/10. Return fewer clips, or none, rather than weak filler.
+Choose the strongest self-contained stories, surprising revelations, useful explanations, strong opinions, disagreements, emotional turns, funny exchanges, or practical lessons. Follow the actual setup, cause and effect, callbacks, and payoff in the transcript. A moment does not need a viral catchphrase to be compelling.
 
-Each transcript row begins with a zero-based index local to this section, followed by its absolute start/end time and the recognized words. Use those row indices to specify boundaries. Start and end indices are inclusive. Only use indices that appear in the supplied transcript.
+Prefer distinct moments from different parts of the recording. Reject introductions, housekeeping, repeated points, generic conversation, and moments that lack a clear payoff. Do not choose a candidate merely because its rule-based score is high.
+
+Only select moments whose standalone editorial value is at least {min_score}/10. Return fewer than {max_clips} when the remaining candidates are weak. Do not invent facts or words.
 
 Return valid JSON only, with this exact shape:
-{{"clips":[{{"start_index":12,"end_index":34,"hook":"A concise natural title","overall":8.2,"reason":"Why the complete moment is valuable"}}]}}
-Return at most {per_chunk} clips for this section. No Markdown and no text outside the JSON object."""
-
+{{"selected":[{{"id":"C2","overall":8.2,"hook":"A concise natural title","reason":"Why this complete moment is valuable"}}]}}
+Use only the candidate IDs supplied. Return at most {max_clips} selections. No Markdown and no text outside the JSON object."""
 
 class OllamaHTTPError(RuntimeError):
     """An Ollama HTTP response with its short, safe-to-log error body."""
@@ -986,17 +978,134 @@ def _normalize_ai_window(sentences, start_index, end_index, min_len, max_len):
     return a, b
 
 
-def ollama_select(data, model, host, min_score, max_clips, min_len, max_len, timeout=1800):
-    """Use a local language model to understand transcript sections and select complete clips.
+def _candidate_overlaps(candidate, chosen, separation=AI_REVIEW_MIN_SEPARATION):
+    """Return True when a candidate repeats or overlaps an already shortlisted moment."""
+    return any(
+        not (float(candidate["end"]) <= float(item["start"]) - separation
+             or float(candidate["start"]) >= float(item["end"]) + separation)
+        for item in chosen
+    )
 
-    Returns a list (possibly empty) when the model ran successfully, or None
-    when Ollama is unavailable/returns invalid output so callers may fall back.
-    Unlike the heuristic selector, AI-selected windows are not passed through
-    _grow_window: doing so would discard context that the model understood.
+
+def _balanced_ai_review_pool(candidates, duration, limit):
+    """Keep the strongest non-overlapping candidates while covering the full timeline.
+
+    Discovery is deliberately broad and inexpensive. This second local pass
+    reduces the text sent to the CPU-only language model without allowing one
+    high-scoring part of a long recording to crowd out the rest.
+    """
+    if not candidates or limit <= 0:
+        return []
+
+    ranked = sorted(
+        candidates,
+        key=lambda item: float(item.get("overall", 0)),
+        reverse=True,
+    )
+    source_duration = max(
+        1.0,
+        float(duration or 0),
+        max(float(item["end"]) for item in ranked),
+    )
+    bucket_count = min(4, max(1, limit))
+    buckets = [[] for _ in range(bucket_count)]
+    for candidate in ranked:
+        midpoint = (float(candidate["start"]) + float(candidate["end"])) / 2.0
+        bucket = min(
+            bucket_count - 1,
+            max(0, int(midpoint / source_duration * bucket_count)),
+        )
+        buckets[bucket].append(candidate)
+
+    for bucket in buckets:
+        bucket.sort(key=lambda item: float(item.get("overall", 0)), reverse=True)
+
+    chosen = []
+    seen = set()
+    # Round-robin the timeline buckets so every part of the recording gets a
+    # chance before a second alternative from any one part is considered.
+    depth = 0
+    while len(chosen) < limit and any(depth < len(bucket) for bucket in buckets):
+        for bucket in buckets:
+            if len(chosen) >= limit:
+                break
+            if depth >= len(bucket):
+                continue
+            candidate = bucket[depth]
+            identity = (round(float(candidate["start"]), 1),
+                        round(float(candidate["end"]), 1))
+            if identity not in seen and not _candidate_overlaps(candidate, chosen):
+                chosen.append(candidate)
+                seen.add(identity)
+        depth += 1
+
+    # If empty timeline buckets or overlaps left room, fill by score while
+    # retaining the same duplicate/spacing protection.
+    for candidate in ranked:
+        if len(chosen) >= limit:
+            break
+        identity = (round(float(candidate["start"]), 1),
+                    round(float(candidate["end"]), 1))
+        if identity in seen or _candidate_overlaps(candidate, chosen):
+            continue
+        chosen.append(candidate)
+        seen.add(identity)
+
+    return sorted(chosen, key=lambda item: float(item["start"]))
+
+
+def _candidate_transcript(sentences, candidate):
+    """Return all sentence text inside a prevalidated candidate's boundaries."""
+    start = float(candidate["start"]) - 0.05
+    end = float(candidate["end"]) + 0.05
+    return " ".join(
+        str(group.get("text", "")).strip()
+        for group in sentences
+        if float(group["start"]) >= start and float(group["end"]) <= end
+    ).strip()
+
+
+def ollama_select(data, model, host, min_score, max_clips, min_len, max_len, timeout=1800):
+    """Use one global AI editorial pass over a broad, timeline-balanced shortlist.
+
+    Candidate discovery is deterministic and local. The language model compares
+    complete 60-180 second candidate moments rather than repeatedly reading the
+    entire transcript in many overlapping requests. Candidate timestamps are
+    fixed before the AI pass, and the AI still decides which moments are strong
+    enough to publish.
     """
     sentences = sentenceize(data["words"], segments=data.get("segments"))
     if not sentences:
         return None
+
+    discovery_limit = max(AI_DISCOVERY_POOL_SIZE, min(72, max_clips * 16))
+    review_limit = min(12, max(6, max_clips * 3))
+    # build_candidates samples four timeline positions per discovery slot.
+    # Use at least 12 slots so the 48-window discovery pool spans the full
+    # recording before rule-based ranking chooses the AI review shortlist.
+    discovery_seed_slots = max(12, max_clips)
+    candidates = build_candidates(
+        sentences,
+        min_len,
+        max_len,
+        discovery_seed_slots,
+        pool_size=discovery_limit,
+    )
+    print(
+        f"AI candidate discovery: {len(candidates)} complete windows from "
+        f"{len(sentences)} sentence groups across "
+        f"{float(data.get('duration') or 0):.1f}s.",
+        flush=True,
+    )
+    if not candidates:
+        print("AI selector: no complete candidate windows met the duration/context rules.", flush=True)
+        return []
+
+    review_pool = _balanced_ai_review_pool(
+        candidates, data.get("duration"), review_limit
+    )
+    if not review_pool:
+        return []
 
     def call(messages, num_predict):
         payload = {
@@ -1027,196 +1136,133 @@ def ollama_select(data, model, host, min_score, max_clips, min_len, max_len, tim
             raise RuntimeError(str(result["error"]))
         return _parse_ollama_json(result.get("message", {}).get("content", ""))
 
-    step = max(1, AI_CHUNK_GROUPS - AI_CHUNK_OVERLAP)
-    chunks = [(start, sentences[start:start + AI_CHUNK_GROUPS])
-              for start in range(0, len(sentences), step)]
-    chunks = [(start, batch) for start, batch in chunks if len(batch) >= 4]
-    per_chunk = max(1, min(3, max_clips))
-    print(f"AI selector: {model} reviewing {len(chunks)} transcript sections "
-          f"({len(sentences)} sentence groups; {min_len}-{max_len}s target).", flush=True)
-
-    candidates = []
-    pending_chunks = list(chunks)
-    total_chunks = len(pending_chunks)
-    completed_chunks = 0
+    review = None
     try:
-        while pending_chunks:
-            offset, batch = pending_chunks.pop(0)
-            chunk_number = completed_chunks + 1
-            transcript_rows = "\n".join(
-                f"[{local_index}] {group['start']:.2f}-{group['end']:.2f}s | "
-                f"{group['text']}"
-                for local_index, group in enumerate(batch)
-            )
-            system = AI_EDITOR_SYSTEM.format(
-                min_len=min_len, max_len=max_len, min_score=min_score,
-                per_chunk=per_chunk,
-            )
-            user = (
-                f"Full video duration: {float(data.get('duration') or 0):.1f} seconds.\n"
-                f"This is transcript section {chunk_number} of {total_chunks}. "
-                f"Rows below use local indices 0 through {len(batch) - 1}; "
-                f"their times are absolute video timestamps.\n\n{transcript_rows}"
+        while review_pool:
+            review_rows = []
+            for index, candidate in enumerate(review_pool, 1):
+                candidate_id = f"C{index}"
+                excerpt = _candidate_transcript(sentences, candidate)
+                review_rows.append(
+                    f"{candidate_id} | {float(candidate['start']):.1f}-"
+                    f"{float(candidate['end']):.1f}s | "
+                    f"{float(candidate['end']) - float(candidate['start']):.1f}s | "
+                    f"local support={float(candidate.get('overall', 0)):.1f}/10\n"
+                    f"TRANSCRIPT: {excerpt}"
+                )
+
+            review_prompt = (
+                f"Full source duration: {float(data.get('duration') or 0):.1f} seconds.\n"
+                f"Required clip duration: {min_len}-{max_len} seconds.\n"
+                f"Minimum blended quality threshold: {min_score:.1f}/10.\n"
+                f"Choose up to {max_clips} distinct candidates from the {len(review_pool)} below. "
+                "Each transcript is the complete text inside its fixed candidate boundaries. "
+                "Judge the actual setup, development and payoff; do not reward a candidate "
+                "for a dramatic opening if the rest does not deliver.\n\n"
+                + "\n\n".join(review_rows)
             )
             print(
-                f"  AI section {chunk_number}/{total_chunks}: "
-                f"sending {len(batch)} sentence groups to Ollama.",
+                f"AI editorial comparison: reviewing {len(review_pool)} "
+                f"timeline-spread candidate(s) in one request.",
                 flush=True,
             )
             try:
-                result = call([
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ], num_predict=512)
+                review = call([
+                    {"role": "system", "content": AI_REVIEW_SYSTEM.format(
+                        min_score=min_score, max_clips=max_clips)},
+                    {"role": "user", "content": review_prompt},
+                ], num_predict=max(256, min(384, max_clips * 128)))
+                break
             except OllamaHTTPError as error:
-                # A transcript section can exceed the model's effective context
-                # even when the model itself starts successfully. Split only that
-                # section, preserve overlap, and retry the smaller requests.
-                if (_is_ollama_context_error(error)
-                        and len(batch) >= 2 * AI_CONTEXT_MIN_GROUPS + 4):
-                    midpoint = len(batch) // 2
-                    overlap = min(12, max(2, len(batch) // 10))
-                    right_start = max(0, midpoint - overlap)
-                    left_end = min(len(batch), midpoint + overlap)
-                    left = batch[:left_end]
-                    right = batch[right_start:]
-                    pending_chunks[0:0] = [
-                        (offset, left),
-                        (offset + right_start, right),
-                    ]
-                    total_chunks += 1
-                    print(
-                        f"  Ollama context limit on section {chunk_number}; "
-                        f"splitting {len(batch)} groups into {len(left)} and "
-                        f"{len(right)} groups, then retrying.",
-                        flush=True,
+                # A very talk-heavy source can still exceed the model's context.
+                # Retry with fewer whole candidates, never chopped transcript text.
+                if _is_ollama_context_error(error) and len(review_pool) > 4:
+                    smaller_limit = max(4, len(review_pool) // 2)
+                    smaller_pool = _balanced_ai_review_pool(
+                        candidates, data.get("duration"), smaller_limit
                     )
-                    continue
+                    if len(smaller_pool) < len(review_pool):
+                        print(
+                            f"  Ollama context limit; reducing the editorial shortlist "
+                            f"from {len(review_pool)} to {len(smaller_pool)} whole candidates.",
+                            flush=True,
+                        )
+                        review_pool = smaller_pool
+                        continue
                 raise
-            items = result.get("clips", [])
-            if not isinstance(items, list):
-                raise ValueError("Ollama 'clips' field was not a list")
-            accepted_before = len(candidates)
-            for item in items[:per_chunk]:
-                if not isinstance(item, dict):
-                    continue
-                local_start = item.get("start_index")
-                local_end = item.get("end_index")
-                if (isinstance(local_start, bool) or isinstance(local_end, bool)
-                        or not isinstance(local_start, (int, float))
-                        or not isinstance(local_end, (int, float))
-                        or not float(local_start).is_integer()
-                        or not float(local_end).is_integer()):
-                    continue
-                local_start, local_end = int(local_start), int(local_end)
-                if local_start < 0 or local_end < local_start or local_end >= len(batch):
-                    continue
-                window = _normalize_ai_window(
-                    sentences, offset + local_start, offset + local_end, min_len, max_len
-                )
-                if window is None:
-                    continue
-                a, b = window
-                try:
-                    model_score = float(item.get("overall", 0))
-                except (TypeError, ValueError):
-                    continue
-                if not 0.0 <= model_score <= 10.0:
-                    continue
+    except Exception as error:  # noqa: BLE001
+        print(f"  Ollama AI selection failed ({error}); heuristic fallback is available.", flush=True)
+        return None
+    try:
+        selected_items = review.get("selected", []) if isinstance(review, dict) else None
+        if not isinstance(selected_items, list):
+            raise ValueError("Ollama 'selected' field was not a list")
+        if len(selected_items) > max_clips:
+            selected_items = selected_items[:max_clips]
 
-                segment = _make_segment(sentences, a, b)
-                local_score = float(segment["overall"])
-                segment["overall"] = round(0.82 * model_score + 0.18 * local_score, 1)
-                segment["hook"] = make_hook(str(item.get("hook") or segment["hook"]), 8)
-                reason = str(item.get("reason") or "Selected by contextual AI review").strip()
-                segment["selection_reasons"] = [("AI editorial assessment: " + reason)[:240]]
-                segment["signals"]["ai_score"] = round(model_score, 2)
-                segment["signals"]["rule_based_support"] = round(local_score, 2)
-                if segment["overall"] >= min_score:
-                    candidates.append(segment)
-            completed_chunks += 1
-            print(f"  AI section {completed_chunks}/{total_chunks}: "
-                  f"{len(candidates) - accepted_before} valid clip candidate(s).", flush=True)
+        selected_pool = []
+        used_ids = set()
+        # Recreate the ID map for the final request size. Candidate IDs always
+        # refer to the exact fixed windows sent in that request.
+        by_id = {}
+        for index, candidate in enumerate(review_pool, 1):
+            by_id[f"C{index}"] = candidate
+
+        for item in selected_items:
+            if not isinstance(item, dict):
+                continue
+            candidate_id = item.get("id") or item.get("candidate_id")
+            if not isinstance(candidate_id, str) or candidate_id not in by_id:
+                continue
+            if candidate_id in used_ids:
+                continue
+            used_ids.add(candidate_id)
+            candidate = by_id[candidate_id]
+            try:
+                model_score = float(item.get("overall", item.get("score", 0)))
+            except (TypeError, ValueError):
+                continue
+            if not 0.0 <= model_score <= 10.0:
+                continue
+
+            segment = dict(candidate)
+            segment["signals"] = dict(candidate.get("signals") or {})
+            local_score = float(candidate.get("overall", 0))
+            segment["overall"] = round(0.82 * model_score + 0.18 * local_score, 1)
+            segment["hook"] = make_hook(
+                str(item.get("hook") or candidate.get("hook") or "clip"), 8
+            )
+            reason = str(
+                item.get("reason") or "Selected by contextual AI editorial review"
+            ).strip()
+            segment["selection_reasons"] = [
+                ("AI editorial assessment: " + reason)[:240]
+            ]
+            segment["signals"]["ai_score"] = round(model_score, 2)
+            segment["signals"]["rule_based_support"] = round(local_score, 2)
+            if segment["overall"] >= min_score:
+                selected_pool.append(segment)
     except Exception as error:  # noqa: BLE001
         print(f"  Ollama AI selection failed ({error}); heuristic fallback is available.", flush=True)
         return None
 
-    # Deduplicate repeated selections caused by overlapping transcript sections.
-    unique = {}
-    for candidate in candidates:
-        key = (round(candidate["start"]), round(candidate["end"]))
-        previous = unique.get(key)
-        if previous is None or candidate["overall"] > previous["overall"]:
-            unique[key] = candidate
-    candidates = sorted(unique.values(), key=lambda item: item["overall"], reverse=True)
-    print(f"AI selector: {len(candidates)} complete, above-threshold candidate(s) "
-          "before final editorial comparison.", flush=True)
-    if not candidates:
-        return []
-
-    # A final model pass compares the best moments across the entire recording,
-    # removes repetitive ideas, and selects a varied final set.
-    review_pool = candidates[:min(12, len(candidates))]
-    selected_pool = review_pool
-    if len(review_pool) > max_clips:
-        review_rows = []
-        for index, item in enumerate(review_pool, 1):
-            excerpt = " ".join(
-                group["text"] for group in sentences
-                if item["start"] <= float(group["start"]) and float(group["end"]) <= item["end"]
-            )
-            excerpt = excerpt[:1600]
-            review_rows.append(
-                f"{index}. ID=C{index}; {item['start']:.1f}-{item['end']:.1f}s "
-                f"({item['end'] - item['start']:.1f}s); model/rule score={item['overall']:.1f}; "
-                f"title={item['hook']}; reason={item['selection_reasons'][0]}; "
-                f"transcript={excerpt}"
-            )
-        review_prompt = (
-            f"Choose up to {max_clips} of these candidate clips for one video. "
-            "Compare actual content, not just numerical scores. Prefer distinct, "
-            "high-value stories or insights; avoid overlapping/repetitive moments. "
-            "Keep only complete, understandable clips with a clear payoff. "
-            "Do not change their timestamps. Return JSON only: "
-            '{"selected":["C2","C4"]}. Return fewer only when the other candidates are weak.\n\n'
-            + "\n\n".join(review_rows)
-        )
-        print(
-            f"AI final comparison: reviewing {len(review_pool)} candidates "
-            f"to choose up to {max_clips} distinct clips.",
-            flush=True,
-        )
-        try:
-            review = call([
-                {"role": "system", "content": "You are the final editor choosing the strongest varied clips."},
-                {"role": "user", "content": review_prompt},
-            ], num_predict=256)
-            ids = review.get("selected", [])
-            if isinstance(ids, list):
-                by_id = {f"C{index}": item for index, item in enumerate(review_pool, 1)}
-                proposed = [by_id[value] for value in ids
-                            if isinstance(value, str) and value in by_id]
-                if proposed:
-                    selected_pool = proposed
-                elif ids == []:
-                    selected_pool = []
-        except Exception as error:  # noqa: BLE001
-            print(f"  AI final comparison unavailable ({error}); using section scores.", flush=True)
-
+    # The AI ranks a fixed shortlist globally. Keep its strongest distinct
+    # choices and preserve the existing no-overlap spacing before rendering.
+    selected_pool.sort(key=lambda item: item["overall"], reverse=True)
     selected = []
     for candidate in selected_pool:
-        if any(not (candidate["end"] <= chosen["start"] - 10
-                    or candidate["start"] >= chosen["end"] + 10)
-               for chosen in selected):
+        if _candidate_overlaps(candidate, selected):
             continue
         selected.append(candidate)
         if len(selected) >= max_clips:
             break
     selected.sort(key=lambda item: item["start"])
-    print(f"AI quality gate: selected {len(selected)}/{max_clips} clip(s) "
-          f"at or above {min_score:.1f}/10.", flush=True)
+    print(
+        f"AI quality gate: selected {len(selected)}/{max_clips} clip(s) "
+        f"at or above {min_score:.1f}/10 from {len(review_pool)} reviewed candidates.",
+        flush=True,
+    )
     return selected
-
 
 def _nearest(values, t):
     lo, hi = 0, len(values) - 1
