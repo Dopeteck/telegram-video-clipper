@@ -186,6 +186,25 @@ describe('TelegramBot', () => {
     });
   });
 
+  it('should open the B-roll Library Mini App from /broll without starting a clip upload', async () => {
+    const message: TelegramMessage = {
+      message_id: 1,
+      date: Math.floor(Date.now() / 1000),
+      chat: { id: 123, type: 'private' },
+      from: { id: 123, is_bot: false, first_name: 'Test' },
+      text: '/broll',
+    };
+
+    mockFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ ok: true, result: {} }) });
+
+    const result = await bot.handleWebhook({ update_id: 1, message });
+    expect(result.ok).toBe(true);
+    const requestBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(requestBody.text).toContain('B-roll Library');
+    expect(requestBody.reply_markup.inline_keyboard[0][0].web_app.url)
+      .toBe('undefined/miniapp/upload?mode=broll');
+  });
+
   describe('handleCallbackQuery', () => {
     it('should handle my_uploads callback', async () => {
       const query: TelegramCallbackQuery = {
