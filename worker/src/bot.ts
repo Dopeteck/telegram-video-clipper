@@ -192,6 +192,8 @@ export class TelegramBot {
         return this.editMessage(chatId, messageId, SETTINGS_MESSAGE, { parse_mode: 'HTML' });
       case 'help':
         return this.editMessage(chatId, messageId, HELP_MESSAGE, { parse_mode: 'HTML' });
+      case 'edit_back':
+        return this.showEditableClips(chatId, userId, messageId);
       case 'upload_video':
         return this.sendMessage(chatId, 'Tap the button below to upload a video:', {
           reply_markup: this.getMainKeyboard(),
@@ -427,9 +429,9 @@ export class TelegramBot {
     return createApiResponse(true, { ok: true });
   }
 
-  private async getCompletedClipKeys(userId: number): Promise<Array<{ jobId: string; key: string }>> {
+  private async getCompletedClipKeys(userId: number): Promise<Array<{ jobId: string; key: string; clipIndex: number }>> {
     const jobs = await this.db.getUserJobs(userId, 20, 0);
-    const clips: Array<{ jobId: string; key: string }> = [];
+    const clips: Array<{ jobId: string; key: string; clipIndex: number }> = [];
     for (const job of jobs) {
       if (job.status !== 'completed') continue;
       let keys: string[] = [];
@@ -442,10 +444,11 @@ export class TelegramBot {
         const listed = await this.env.R2_BUCKET.list({ prefix: `jobs/${job.id}/`, limit: 20 });
         keys = listed.objects.map((object) => object.key);
       }
-      for (const key of keys) {
+      for (let clipIndex = 0; clipIndex < keys.length; clipIndex++) {
+        const key = keys[clipIndex];
         if (typeof key === 'string' && key.startsWith(`jobs/${job.id}/`) &&
             key.split('/').length === 3 && key.toLowerCase().endsWith('.mp4')) {
-          clips.push({ jobId: job.id, key });
+          clips.push({ jobId: job.id, key, clipIndex });
         }
       }
       if (clips.length >= 10) break;
@@ -463,7 +466,7 @@ export class TelegramBot {
       }
       const keyboard: TelegramInlineKeyboardButton[][] = clips.map((clip, index) => {
         const filename = clip.key.split('/').pop() || 'Finished clip';
-        return [{ text: `✂️ ${filename.slice(0, 48)}`, callback_data: `edit_clip_${clip.jobId}_${index}` }];
+        return [{ text: `✂️ ${filename.slice(0, 48)}`, callback_data: `edit_clip_${clip.jobId}_${clip.clipIndex}` }];
       });
       const message = '✂️ <b>Choose a finished clip to edit</b>\\n\\nSelect one of your completed clips. The editor creates a separate edited copy and leaves the original untouched.';
       if (messageId) return this.editMessage(chatId, messageId, message, { parse_mode: 'HTML', reply_markup: { inline_keyboard: keyboard } });
