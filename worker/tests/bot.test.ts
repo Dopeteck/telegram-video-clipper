@@ -71,6 +71,7 @@ describe('TelegramBot', () => {
   let bot: TelegramBot;
   const mockEnv = {
     TELEGRAM_BOT_TOKEN: 'test_token',
+    BROLL_ALLOWED_TELEGRAM_USER_IDS: '',
     TELEGRAM_WEBHOOK_SECRET: 'test_secret',
     APP_ORIGIN: 'https://test.example.com',
     DB: mockDB as any,
@@ -133,6 +134,38 @@ describe('TelegramBot', () => {
 
       const result = await bot.handleWebhook(update);
       expect(result.ok).toBe(true);
+    });
+
+    it('should return the Telegram user ID for /whoami', async () => {
+      const message: TelegramMessage = {
+        message_id: 1,
+        date: Math.floor(Date.now() / 1000),
+        chat: { id: 123, type: 'private' },
+        from: { id: 123, is_bot: false, first_name: 'Test' },
+        text: '/whoami',
+      };
+      mockFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ ok: true, result: {} }) });
+      await bot.handleWebhook({ update_id: 1, message });
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.telegram.org/bottest_token/sendMessage',
+        expect.objectContaining({ body: expect.stringContaining('<code>123</code>') })
+      );
+    });
+
+    it('keeps /broll locked until the Telegram user is allowlisted', async () => {
+      const message: TelegramMessage = {
+        message_id: 1,
+        date: Math.floor(Date.now() / 1000),
+        chat: { id: 123, type: 'private' },
+        from: { id: 123, is_bot: false, first_name: 'Test' },
+        text: '/broll',
+      };
+      mockFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ ok: true, result: {} }) });
+      await bot.handleWebhook({ update_id: 1, message });
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.telegram.org/bottest_token/sendMessage',
+        expect.objectContaining({ body: expect.stringContaining('BROLL_ALLOWED_TELEGRAM_USER_IDS') })
+      );
     });
 
     it('should handle document upload', async () => {
