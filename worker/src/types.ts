@@ -692,6 +692,7 @@ export interface ApiResponse<T = unknown> {
 export interface UploadStatusResponse {
   upload: Upload;
   parts: UploadPart[];
+  chunkSize: number;
   progress: {
     uploadedBytes: number;
     totalBytes: number;
