@@ -156,9 +156,14 @@ def test_ai_discovery_finds_time_balanced_windows_in_a_long_varied_transcript():
         candidates, duration=groups[-1]["end"], limit=9
     )
 
-    assert len(candidates) >= 40
+    assert len(candidates) >= 100
     assert len(review_pool) == 9
-    assert all(60 <= item["end"] - item["start"] <= 180 for item in candidates)
+    durations = [item["end"] - item["start"] for item in candidates]
+    assert all(60 <= duration <= 180 for duration in durations)
+    # Discovery must offer materially different lengths so Qwen can retain
+    # more context when a story needs it instead of being locked to ~90s.
+    assert min(durations) <= 70
+    assert max(durations) >= 175
     assert candidates[0]["start"] < 10
     assert candidates[-1]["end"] > groups[-1]["end"] * 0.85
     for index, candidate in enumerate(review_pool):
