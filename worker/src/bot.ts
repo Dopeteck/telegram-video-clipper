@@ -25,6 +25,7 @@ const HELP_MESSAGE = `
 • Track upload progress in real-time
 • Resume interrupted uploads
 • Process videos into clips with Chopify
+• Upload rights-cleared B-roll footage for the AI editor
 
 <b>How to Use:</b>
 1. Tap <b>🎬 Upload Video</b> to open the Mini App
@@ -128,6 +129,14 @@ export class TelegramBot {
 
     if (message.text === '/uploads') {
       return this.showUserUploads(chatId, userId);
+    }
+
+    if (message.text === '/whoami') {
+      return this.sendMessage(chatId, 'Your Telegram user ID is <code>' + userId + '</code>.', { parse_mode: 'HTML' });
+    }
+
+    if (message.text === '/broll' || message.text === '🎞 B-roll Library') {
+      return this.showBrollLibrary(chatId, userId);
     }
 
     if (message.text === '🎬 Upload Video') {
@@ -404,6 +413,18 @@ export class TelegramBot {
     return createApiResponse(true, { ok: true });
   }
 
+  private async showBrollLibrary(chatId: number, userId: number): Promise<ApiResponse> {
+    const allowedIds = (this.env.BROLL_ALLOWED_TELEGRAM_USER_IDS || '').split(',').map((value) => value.trim()).filter(Boolean);
+    if (!allowedIds.includes(String(userId))) {
+      const text = '🔒 <b>B-roll Library Access</b>\n\nYour Telegram ID: <code>' + userId + '</code>\n\nThe library is restricted to approved administrators. Add this ID to the Cloudflare Worker variable <code>BROLL_ALLOWED_TELEGRAM_USER_IDS</code>, then try /broll again.';
+      return this.sendMessage(chatId, text, { parse_mode: 'HTML', reply_markup: this.getMainKeyboard() });
+    }
+    return this.sendMessage(chatId, '🎞 <b>B-roll Library</b>\n\nUpload licensed or self-owned footage to the private R2 library. Add its description, tags, source and licence, then confirm the usage rights.', {
+      parse_mode: 'HTML',
+      reply_markup: { inline_keyboard: [[{ text: '🎞 Open B-roll Library', web_app: { url: this.miniappUrl + '/miniapp/upload?mode=broll' } }]] },
+    });
+  }
+
   private async showUserUploads(chatId: number, userId: number, messageId?: number): Promise<ApiResponse> {
     const uploads = await this.db.getUserUploads(userId, 10);
     
@@ -491,6 +512,7 @@ export class TelegramBot {
       keyboard: [
         [{ text: '🎬 Upload Video', web_app: { url: `${this.miniappUrl}/miniapp/upload` } }],
         [{ text: '📂 My Uploads' }],
+        [{ text: '🎞 B-roll Library', web_app: { url: this.miniappUrl + '/miniapp/upload?mode=broll' } }],
         [{ text: '⚙️ Settings' }],
         [{ text: '❓ Help' }],
       ],
@@ -556,6 +578,8 @@ export class TelegramBot {
       { command: 'help', description: 'Show help message' },
       { command: 'settings', description: 'Configure processing preferences' },
       { command: 'uploads', description: 'View your upload history' },
+      { command: 'broll', description: 'Upload footage to the B-roll library' },
+      { command: 'whoami', description: 'Show your Telegram user ID' },
     ];
     const response = await fetch(`https://api.telegram.org/bot${this.botToken}/setMyCommands`, {
       method: 'POST',
