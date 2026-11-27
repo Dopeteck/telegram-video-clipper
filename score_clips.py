@@ -1112,7 +1112,12 @@ def _build_ai_discovery_candidates(sentences, min_len, max_len, pool_size):
             for slot in range(sample_count)
         ]
 
-    target_duration = min(float(max_len), max(float(min_len), min(105.0, float(min_len) + 30.0)))
+    # Offer the editor multiple complete lengths for each timeline position.
+    # This preserves the user's context-dependent 1-3 minute preference:
+    # Qwen can prefer a concise 60s moment or retain up to 180s when the setup
+    # and payoff need more room. All endpoints remain complete transcript groups.
+    middle_target = min(float(max_len), max(float(min_len), min(120.0, float(min_len) + 60.0)))
+    duration_targets = sorted({float(min_len), middle_target, float(max_len)})
     candidates = []
     seen_starts = set()
     eligible_cursor = 0
@@ -1130,6 +1135,7 @@ def _build_ai_discovery_candidates(sentences, min_len, max_len, pool_size):
         seen_starts.add(start_index)
 
         start_time = float(sentences[start_index]["start"])
+        first_complete_by_target = {}
         last_complete = None
         for end_index in range(start_index, len(sentences)):
             current = sentences[end_index]
@@ -1150,18 +1156,27 @@ def _build_ai_discovery_candidates(sentences, min_len, max_len, pool_size):
                 and not _ends_question(tail)
             )
             if is_publishable_end:
-                last_complete = (start_index, end_index)
-                if duration >= target_duration:
-                    break
+                last_complete = (start_index, end_index, duration)
+                for target in duration_targets:
+                    if duration >= target and target not in first_complete_by_target:
+                        first_complete_by_target[target] = (start_index, end_index)
 
-        if last_complete is None:
-            continue
-
-        start_index, end_index = last_complete
-        segment = _make_segment(sentences, start_index, end_index)
-        duration = float(segment["end"]) - float(segment["start"])
-        if min_len <= duration <= max_len:
-            candidates.append(segment)
+        # Include the first complete endpoint at each target length, plus the
+        # longest valid endpoint before a real pause or the hard max duration.
+        # Deduplicate when a short source or an early pause gives the same span.
+        windows = list(first_complete_by_target.values())
+        if last_complete is not None:
+            windows.append((last_complete[0], last_complete[1]))
+        seen_windows = set()
+        for window_start, window_end in windows:
+            identity = (window_start, window_end)
+            if identity in seen_windows:
+                continue
+            seen_windows.add(identity)
+            segment = _make_segment(sentences, window_start, window_end)
+            duration = float(segment["end"]) - float(segment["start"])
+            if min_len <= duration <= max_len:
+                candidates.append(segment)
 
     # Candidate windows may overlap during discovery. The balanced review-pool
     # stage removes overlap while retaining coverage across the full recording.
