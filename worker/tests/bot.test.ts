@@ -166,8 +166,8 @@ describe('TelegramBot', () => {
       expect(request).toBeTruthy();
       const payload = JSON.parse(request![1].body as string);
       expect(payload.text).toContain('AI Video Editor');
-      expect(payload.text).toContain('\\n\\nI could not find any completed clips yet');
-      expect(payload.text).not.toContain('\\\\n');
+      expect(payload.text).toContain('\n\nI could not find any completed clips yet');
+      expect(payload.text).not.toContain('\\n');
     });
 
     it('keeps /broll locked until the Telegram user is allowlisted', async () => {
