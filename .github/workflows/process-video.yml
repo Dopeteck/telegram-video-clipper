@@ -597,8 +597,8 @@ jobs:
               model_size='medium', device='cpu', language=None,
           )
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write(f"source_sha256={result['source_sha256']}\\n")
-              output.write(f"cache_hit={str(result['hit']).lower()}\\n")
+              output.write(f"source_sha256={result['source_sha256']}\n")
+              output.write(f"cache_hit={str(result['hit']).lower()}\n")
           if result['hit']:
               print(
                   f"Restored matching private transcript cache: {result['key']} "
