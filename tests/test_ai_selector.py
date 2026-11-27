@@ -107,9 +107,10 @@ def test_ai_selector_uses_one_global_comparison_and_preserves_candidate_boundari
         assert "C1 | 0.0-79.0s" in prompt
         assert "The founder explains the difficult decision." in prompt
         return _fake_response({
-            "selected": [{
+            "evaluated": [{
                 "id": "C1",
                 "overall": 8.7,
+                "selected": True,
                 "hook": "The decision that changed everything",
                 "reason": "A complete cause, consequence and payoff.",
             }]
@@ -235,7 +236,7 @@ def test_context_limit_retries_with_fewer_whole_candidates(monkeypatch):
         user_text = payload["messages"][1]["content"]
         candidate_count = len(re.findall(r"(?m)^C\d+ \|", user_text))
         request_sizes.append(candidate_count)
-        if candidate_count > 4:
+        if candidate_count > 2:
             raise urllib.error.HTTPError(
                 request.full_url,
                 400,
@@ -244,11 +245,18 @@ def test_context_limit_retries_with_fewer_whole_candidates(monkeypatch):
                 fp=BytesIO(b'{"error":"prompt is too long for the available context"}'),
             )
         return _fake_response({
-            "selected": [{
+            "evaluated": [{
                 "id": "C1",
                 "overall": 8.5,
+                "selected": True,
                 "hook": "The complete explanation",
                 "reason": "A clear explanation with a complete payoff.",
+            }, {
+                "id": "C2",
+                "overall": 4.0,
+                "selected": False,
+                "hook": "A weaker point",
+                "reason": "The explanation does not reach a useful payoff.",
             }]
         })
 
@@ -263,9 +271,91 @@ def test_context_limit_retries_with_fewer_whole_candidates(monkeypatch):
         max_len=180,
     )
 
-    assert request_sizes == [8, 4]
+    assert request_sizes == [4, 2, 4, 2]
+    assert len(selected) == 2
+    assert all(item["signals"]["ai_score"] == 8.5 for item in selected)
+
+
+def test_ai_selector_reviews_a_second_timeline_batch_after_zero_selections(monkeypatch, capsys):
+    groups = [
+        _group(f"Story section {index} explains an important complete point.", index * 10, index * 10 + 9)
+        for index in range(81)
+    ]
+    words = [word for group in groups for word in group["words"]]
+    candidates = [
+        _candidate(index * 90, index * 90 + 70, score=6.2 + index / 10)
+        for index in range(8)
+    ]
+    monkeypatch.setattr(score_clips, "_build_ai_discovery_candidates",
+                        lambda *args, **kwargs: candidates)
+    call_count = 0
+    second_batch_start = None
+
+    def fake_urlopen(request, timeout):
+        nonlocal call_count, second_batch_start
+        call_count += 1
+        payload = json.loads(request.data.decode("utf-8"))
+        user_text = payload["messages"][1]["content"]
+        match = re.search(r"(?m)^C1 \| ([0-9.]+)-", user_text)
+        assert match
+        if call_count == 1:
+            return _fake_response({
+                "evaluated": [{
+                    "id": f"C{index}",
+                    "overall": 4.0,
+                    "selected": False,
+                    "hook": "Weak moment",
+                    "reason": "No clear standalone payoff.",
+                } for index in range(1, 5)]
+            })
+        second_batch_start = float(match.group(1))
+        return _fake_response({
+            "evaluated": [{
+                "id": "C1",
+                "overall": 8.6,
+                "selected": True,
+                "hook": "The turning point",
+                "reason": "A distinct moment with a complete explanation.",
+            }, {
+                "id": "C2",
+                "overall": 4.2,
+                "selected": False,
+                "hook": "A weaker moment",
+                "reason": "The point repeats earlier material.",
+            }, {
+                "id": "C3",
+                "overall": 4.0,
+                "selected": False,
+                "hook": "Another weak moment",
+                "reason": "The payoff is incomplete.",
+            }, {
+                "id": "C4",
+                "overall": 4.1,
+                "selected": False,
+                "hook": "A final weak moment",
+                "reason": "It lacks a clear takeaway.",
+            }]
+        })
+
+    monkeypatch.setattr(score_clips.urllib.request, "urlopen", fake_urlopen)
+    selected = score_clips.ollama_select(
+        {"words": words, "segments": [], "duration": 810},
+        "qwen3:4b-instruct-2507-q4_K_M",
+        "http://127.0.0.1:11434",
+        min_score=5.5,
+        max_clips=3,
+        min_len=60,
+        max_len=180,
+    )
+
+    output = capsys.readouterr().out
+    assert call_count == 2
+    assert second_batch_start is not None
     assert len(selected) == 1
-    assert selected[0]["start"] in {candidate["start"] for candidate in candidates}
+    assert selected[0]["start"] == second_batch_start
+    assert "REJECTED BY AI" in output
+    assert "model=8.6" in output
+    assert "2 request(s)" in output
 
 
 def test_ollama_http_400_reports_the_response_body_and_returns_none(monkeypatch, capsys):

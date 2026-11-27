@@ -548,6 +548,66 @@ jobs:
               out.write(f"enable_loudnorm={job.get('enable_loudnorm') or 0}\n")
           PY
 
+      - name: Restore matching transcript from private R2 cache
+        id: transcript-cache
+        continue-on-error: true
+        shell: bash
+        env:
+          VIDEO_PATH: ${{ steps.download.outputs.video_path || steps.fetch-source.outputs.video_path }}
+          JOB_ID: ${{ github.event.client_payload.job_id || github.event.inputs.job_id }}
+          ASPECT_RATIO: ${{ steps.prefs.outputs.aspect_ratio }}
+          STYLE: ${{ steps.prefs.outputs.style }}
+          ENABLE_TIGHTEN: ${{ steps.prefs.outputs.enable_tighten }}
+          ENABLE_LOUDNORM: ${{ steps.prefs.outputs.enable_loudnorm }}
+          AI_MODEL: qwen3:4b-instruct-2507-q4_K_M
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: telegram-video-clipper-uploads
+        run: |
+          python - <<'PY'
+          import os
+          from transcript_cache import create_r2_client, restore_transcript
+
+          video_path = os.environ['VIDEO_PATH']
+          job_id = os.environ['JOB_ID']
+          work_dir = f'/tmp/chopify_work_{job_id}'
+          options = {
+              'aspect': os.environ['ASPECT_RATIO'],
+              'style': os.environ['STYLE'],
+              'tighten': os.environ['ENABLE_TIGHTEN'] == '1',
+              'loudnorm': os.environ['ENABLE_LOUDNORM'] == '1',
+              'whisper_model': 'medium',
+              'device': 'cpu',
+              'language': None,
+              'min_len': 60,
+              'max_len': 180,
+              'max_clips': 3,
+              'min_score': 5.5,
+              'llm': os.environ['AI_MODEL'],
+              'strict_llm': True,
+          }
+          s3 = create_r2_client(
+              os.environ['R2_ACCOUNT_ID'],
+              os.environ['R2_ACCESS_KEY_ID'],
+              os.environ['R2_SECRET_ACCESS_KEY'],
+          )
+          result = restore_transcript(
+              video_path, work_dir, s3, os.environ['R2_BUCKET'], options,
+              model_size='medium', device='cpu', language=None,
+          )
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f"source_sha256={result['source_sha256']}\n")
+              output.write(f"cache_hit={str(result['hit']).lower()}\n")
+          if result['hit']:
+              print(
+                  f"Restored matching private transcript cache: {result['key']} "
+                  f"({result['bytes']} bytes). Whisper transcription will be skipped."
+              )
+          else:
+              print(f"Transcript cache miss: {result['reason']}. Fresh transcription will run.")
+          PY
+
       - name: Run Chopify processing
         id: chopify
         shell: bash
@@ -636,6 +696,52 @@ jobs:
 
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
               out.write(f'clips={json.dumps(clips)}\n')
+          PY
+
+      - name: Save transcript to private R2 cache
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          VIDEO_PATH: ${{ steps.download.outputs.video_path || steps.fetch-source.outputs.video_path }}
+          WORK_DIR: /tmp/chopify_work_${{ github.event.client_payload.job_id || github.event.inputs.job_id }}
+          SOURCE_SHA256: ${{ steps.transcript-cache.outputs.source_sha256 }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: telegram-video-clipper-uploads
+        run: |
+          python - <<'PY'
+          import os
+          from transcript_cache import create_r2_client, store_transcript
+
+          video_path = os.environ.get('VIDEO_PATH', '')
+          if not video_path or not os.path.isfile(video_path):
+              print('Transcript cache not saved: source video is unavailable.')
+              raise SystemExit(0)
+
+          s3 = create_r2_client(
+              os.environ['R2_ACCOUNT_ID'],
+              os.environ['R2_ACCESS_KEY_ID'],
+              os.environ['R2_SECRET_ACCESS_KEY'],
+          )
+          result = store_transcript(
+              video_path,
+              os.environ['WORK_DIR'],
+              s3,
+              os.environ['R2_BUCKET'],
+              source_hash=os.environ.get('SOURCE_SHA256') or None,
+              model_size='medium',
+              device='cpu',
+              language=None,
+          )
+          if result['stored']:
+              print(
+                  f"Saved private transcript cache: {result['key']} "
+                  f"({result['bytes']} bytes)."
+              )
+          else:
+              print(f"Transcript cache not saved: {result['reason']}.")
           PY
 
       - name: Upload clips to R2
