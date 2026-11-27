@@ -3,6 +3,7 @@ import { Env, ApiResponse, PresignedUrlResponse, InitiateMultipartResponse, Comp
 import { validateTelegramInitData, createApiResponse, generateId, sanitizeFilename, validateMimeType, validateFileExtension, getExtensionFromMimeType, safeEqual } from './utils';
 import { Database } from './db';
 import { R2Uploader } from './r2';
+import { appendBrollAsset, validateBrollMetadata } from './broll';
 
 type ApiVariables = {
   telegramUser: TelegramUser;
@@ -111,6 +112,144 @@ api.post('/upload/initiate', async (c) => {
 
     return c.json(createApiResponse(false, undefined,
       error instanceof Error ? error.message : 'Failed to initiate upload'), 500);
+  }
+});
+
+
+// B-roll uploads use the same authenticated multipart uploader as source videos,
+// but are stored under a separate R2 prefix and never enter the clipping queue.
+api.post('/broll/upload/initiate', async (c) => {
+  const requestId = crypto.randomUUID();
+  const user = c.get('telegramUser');
+  const chat = c.get('telegramChat');
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json(createApiResponse(false, undefined, 'Invalid JSON body'), 400);
+  }
+
+  const filename = typeof body.filename === 'string' ? body.filename.trim() : '';
+  const fileSize = Number(body.fileSize);
+  const mimeType = typeof body.mimeType === 'string' ? body.mimeType : '';
+
+  if (!filename || !Number.isSafeInteger(fileSize) || fileSize <= 0 || !mimeType) {
+    return c.json(createApiResponse(false, undefined, 'Missing or invalid file details'), 400);
+  }
+  if (!validateMimeType(mimeType) || !validateFileExtension(filename)) {
+    return c.json(createApiResponse(false, undefined, 'Unsupported video format'), 400);
+  }
+
+  const maxSize = parseInt(c.env.MAX_UPLOAD_BYTES || '2147483648', 10);
+  if (fileSize > maxSize) {
+    return c.json(createApiResponse(false, undefined, 'File exceeds the 2 GB upload limit'), 400);
+  }
+
+  const db = new Database(c.env.DB, c.env);
+  const r2 = new R2Uploader(c.env);
+  const uploadId = 'broll_' + Date.now() + '_' + user.id + '_' + generateId().slice(0, 8);
+  const objectKey = 'broll/uploads/' + user.id + '/' + uploadId + '/' + sanitizeFilename(filename);
+  const chunkSize = parseInt(c.env.CHUNK_SIZE || '5242880', 10);
+  const totalParts = Math.ceil(fileSize / chunkSize);
+
+  try {
+    const upload = await db.createUpload({
+      id: uploadId,
+      telegram_user_id: user.id,
+      telegram_chat_id: chat?.id ?? null,
+      original_filename: filename,
+      object_key: objectKey,
+      file_size: fileSize,
+      mime_type: mimeType,
+      status: 'uploading',
+      upload_type: 'broll',
+    });
+    const initResponse = await r2.initiateMultipartUpload(objectKey, mimeType, totalParts);
+    await db.updateUpload(uploadId, { multipart_upload_id: initResponse.uploadId });
+
+    console.log('[' + requestId + '] B-roll multipart upload started: ' + uploadId);
+    return c.json(createApiResponse(true, {
+      uploadId: upload.id,
+      objectKey: upload.object_key,
+      multipartUploadId: initResponse.uploadId,
+      totalParts,
+      chunkSize,
+      partUrls: initResponse.partUrls,
+    }));
+  } catch (error) {
+    console.error('[' + requestId + '] B-roll upload initiation failed:', error);
+    try {
+      await db.updateUpload(uploadId, {
+        status: 'failed',
+        error_message: error instanceof Error ? error.message : 'Unknown error',
+      });
+    } catch (updateError) {
+      console.error('[' + requestId + '] Failed to mark B-roll upload failed:', updateError);
+    }
+    return c.json(createApiResponse(false, undefined,
+      error instanceof Error ? error.message : 'Could not start B-roll upload'), 500);
+  }
+});
+
+api.post('/broll/publish', async (c) => {
+  const user = c.get('telegramUser');
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json(createApiResponse(false, undefined, 'Invalid JSON body'), 400);
+  }
+
+  const uploadId = typeof body.uploadId === 'string' ? body.uploadId : '';
+  if (!uploadId) {
+    return c.json(createApiResponse(false, undefined, 'Missing uploadId'), 400);
+  }
+
+  const db = new Database(c.env.DB, c.env);
+  const upload = await db.getUpload(uploadId);
+  if (
+    !upload ||
+    upload.telegram_user_id !== user.id ||
+    upload.upload_type !== 'broll' ||
+    !upload.object_key.startsWith('broll/uploads/' + user.id + '/')
+  ) {
+    return c.json(createApiResponse(false, undefined, 'B-roll upload not found'), 404);
+  }
+  if (upload.status !== 'uploaded') {
+    return c.json(createApiResponse(false, undefined, 'Finish uploading the B-roll file before publishing it'), 409);
+  }
+
+  let metadata: ReturnType<typeof validateBrollMetadata>;
+  try {
+    metadata = validateBrollMetadata(body);
+  } catch (error) {
+    return c.json(createApiResponse(false, undefined,
+      error instanceof Error ? error.message : 'Invalid B-roll metadata'), 400);
+  }
+
+  const storedObject = await c.env.R2_BUCKET.head(upload.object_key);
+  if (!storedObject || storedObject.size !== upload.file_size) {
+    return c.json(createApiResponse(false, undefined, 'B-roll file is missing or its size does not match the completed upload'), 409);
+  }
+
+  try {
+    const count = await appendBrollAsset(c.env.R2_BUCKET, {
+      id: upload.id,
+      key: upload.object_key,
+      ...metadata,
+      rights_verified: true,
+    });
+    await db.updateUpload(upload.id, { source_url: metadata.source_url });
+    return c.json(createApiResponse(true, {
+      id: upload.id,
+      key: upload.object_key,
+      assetsCount: count,
+      message: 'B-roll asset added to the AI editing library.',
+    }));
+  } catch (error) {
+    console.error('B-roll catalogue publish failed:', error);
+    return c.json(createApiResponse(false, undefined,
+      error instanceof Error ? error.message : 'Could not publish B-roll asset', 'BROLL_PUBLISH_FAILED'), 409);
   }
 });
 
