@@ -152,6 +152,24 @@ describe('TelegramBot', () => {
       );
     });
 
+    it('lists completed clips for /edit and sends real line breaks when none are found', async () => {
+      const message: TelegramMessage = {
+        message_id: 1,
+        date: Math.floor(Date.now() / 1000),
+        chat: { id: 123, type: 'private' },
+        from: { id: 123, is_bot: false, first_name: 'Test' },
+        text: '/edit',
+      };
+      mockFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ ok: true, result: {} }) });
+      await bot.handleWebhook({ update_id: 1, message });
+      const request = mockFetch.mock.calls.find(([url]) => String(url).endsWith('/sendMessage'));
+      expect(request).toBeTruthy();
+      const payload = JSON.parse(request![1].body as string);
+      expect(payload.text).toContain('AI Video Editor');
+      expect(payload.text).toContain('\\n\\nI could not find any completed clips yet');
+      expect(payload.text).not.toContain('\\\\n');
+    });
+
     it('keeps /broll locked until the Telegram user is allowlisted', async () => {
       const message: TelegramMessage = {
         message_id: 1,
