@@ -418,4 +418,3 @@ def test_strict_llm_mode_does_not_silently_fall_back_to_heuristics(tmp_path, mon
             min_score=0,
             strict_llm=True,
         )
-\n
