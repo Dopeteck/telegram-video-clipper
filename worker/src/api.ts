@@ -3,6 +3,7 @@ import { Env, ApiResponse, PresignedUrlResponse, InitiateMultipartResponse, Comp
 import { validateTelegramInitData, createApiResponse, generateId, sanitizeFilename, validateMimeType, validateFileExtension, getExtensionFromMimeType, safeEqual } from './utils';
 import { Database } from './db';
 import { R2Uploader } from './r2';
+import { appendBrollAsset } from './broll';
 
 type ApiVariables = {
   telegramUser: TelegramUser;
@@ -418,13 +419,6 @@ api.post('/broll/upload/complete', async (c) => {
     if (completed.size !== fileSize) {
       return c.json(createApiResponse(false, undefined, 'Uploaded file size verification failed.'), 400);
     }
-    const object = await c.env.R2_BUCKET.get(BROLL_CATALOG_KEY);
-    let catalogue: { assets: Array<Record<string, unknown>> } = { assets: [] };
-    if (object) {
-      const parsed = JSON.parse(await object.text());
-      if (!parsed || !Array.isArray(parsed.assets)) throw new Error('Existing catalogue has an invalid format.');
-      catalogue = parsed;
-    }
     const asset = {
       id: 'broll_' + generateId().slice(0, 24),
       key,
@@ -434,11 +428,8 @@ api.post('/broll/upload/complete', async (c) => {
       license: licence,
       rights_verified: true,
     };
-    catalogue.assets.push(asset);
-    await c.env.R2_BUCKET.put(BROLL_CATALOG_KEY, JSON.stringify(catalogue, null, 2), {
-      httpMetadata: { contentType: 'application/json; charset=utf-8' },
-    });
-    return c.json(createApiResponse(true, { asset, assetCount: catalogue.assets.length, size: completed.size }));
+    const assetCount = await appendBrollAsset(c.env.R2_BUCKET, asset);
+    return c.json(createApiResponse(true, { asset, assetCount, size: completed.size }));
   } catch (error) {
     console.error('B-roll upload completion/catalogue update failed:', error);
     return c.json(createApiResponse(false, undefined, 'The video uploaded, but the B-roll catalogue could not be updated. Check the catalogue before retrying the same file.'), 500);
