@@ -1133,60 +1133,64 @@ def ollama_select(data, model, host, min_score, max_clips, min_len, max_len, tim
         return _parse_ollama_json(result.get("message", {}).get("content", ""))
 
     review = None
-    while review_pool:
-        review_rows = []
-        by_id = {}
-        for index, candidate in enumerate(review_pool, 1):
-            candidate_id = f"C{index}"
-            by_id[candidate_id] = candidate
-            excerpt = _candidate_transcript(sentences, candidate)
-            review_rows.append(
-                f"{candidate_id} | {float(candidate['start']):.1f}-"
-                f"{float(candidate['end']):.1f}s | "
-                f"{float(candidate['end']) - float(candidate['start']):.1f}s | "
-                f"local support={float(candidate.get('overall', 0)):.1f}/10\n"
-                f"TRANSCRIPT: {excerpt}"
-            )
-
-        review_prompt = (
-            f"Full source duration: {float(data.get('duration') or 0):.1f} seconds.\n"
-            f"Required clip duration: {min_len}-{max_len} seconds.\n"
-            f"Minimum blended quality threshold: {min_score:.1f}/10.\n"
-            f"Choose up to {max_clips} distinct candidates from the {len(review_pool)} below. "
-            "Each transcript is the complete text inside its fixed candidate boundaries. "
-            "Judge the actual setup, development and payoff; do not reward a candidate "
-            "for a dramatic opening if the rest does not deliver.\n\n"
-            + "\n\n".join(review_rows)
-        )
-        print(
-            f"AI editorial comparison: reviewing {len(review_pool)} "
-            f"timeline-spread candidate(s) in one request.",
-            flush=True,
-        )
-        try:
-            review = call([
-                {"role": "system", "content": AI_REVIEW_SYSTEM.format(
-                    min_score=min_score, max_clips=max_clips)},
-                {"role": "user", "content": review_prompt},
-            ], num_predict=max(256, min(384, max_clips * 128)))
-            break
-        except OllamaHTTPError as error:
-            # A very talk-heavy source can still exceed the model's context.
-            # Retry with fewer whole candidates, never chopped transcript text.
-            if _is_ollama_context_error(error) and len(review_pool) > 4:
-                smaller_limit = max(4, len(review_pool) // 2)
-                smaller_pool = _balanced_ai_review_pool(
-                    candidates, data.get("duration"), smaller_limit
+    try:
+        while review_pool:
+            review_rows = []
+            by_id = {}
+            for index, candidate in enumerate(review_pool, 1):
+                candidate_id = f"C{index}"
+                by_id[candidate_id] = candidate
+                excerpt = _candidate_transcript(sentences, candidate)
+                review_rows.append(
+                    f"{candidate_id} | {float(candidate['start']):.1f}-"
+                    f"{float(candidate['end']):.1f}s | "
+                    f"{float(candidate['end']) - float(candidate['start']):.1f}s | "
+                    f"local support={float(candidate.get('overall', 0)):.1f}/10\n"
+                    f"TRANSCRIPT: {excerpt}"
                 )
-                if len(smaller_pool) < len(review_pool):
-                    print(
-                        f"  Ollama context limit; reducing the editorial shortlist "
-                        f"from {len(review_pool)} to {len(smaller_pool)} whole candidates.",
-                        flush=True,
+
+            review_prompt = (
+                f"Full source duration: {float(data.get('duration') or 0):.1f} seconds.\n"
+                f"Required clip duration: {min_len}-{max_len} seconds.\n"
+                f"Minimum blended quality threshold: {min_score:.1f}/10.\n"
+                f"Choose up to {max_clips} distinct candidates from the {len(review_pool)} below. "
+                "Each transcript is the complete text inside its fixed candidate boundaries. "
+                "Judge the actual setup, development and payoff; do not reward a candidate "
+                "for a dramatic opening if the rest does not deliver.\n\n"
+                + "\n\n".join(review_rows)
+            )
+            print(
+                f"AI editorial comparison: reviewing {len(review_pool)} "
+                f"timeline-spread candidate(s) in one request.",
+                flush=True,
+            )
+            try:
+                review = call([
+                    {"role": "system", "content": AI_REVIEW_SYSTEM.format(
+                        min_score=min_score, max_clips=max_clips)},
+                    {"role": "user", "content": review_prompt},
+                ], num_predict=max(256, min(384, max_clips * 128)))
+                break
+            except OllamaHTTPError as error:
+                # A very talk-heavy source can still exceed the model's context.
+                # Retry with fewer whole candidates, never chopped transcript text.
+                if _is_ollama_context_error(error) and len(review_pool) > 4:
+                    smaller_limit = max(4, len(review_pool) // 2)
+                    smaller_pool = _balanced_ai_review_pool(
+                        candidates, data.get("duration"), smaller_limit
                     )
-                    review_pool = smaller_pool
-                    continue
-            raise
+                    if len(smaller_pool) < len(review_pool):
+                        print(
+                            f"  Ollama context limit; reducing the editorial shortlist "
+                            f"from {len(review_pool)} to {len(smaller_pool)} whole candidates.",
+                            flush=True,
+                        )
+                        review_pool = smaller_pool
+                        continue
+                raise
+    except Exception as error:  # noqa: BLE001
+        print(f"  Ollama AI selection failed ({error}); heuristic fallback is available.", flush=True)
+        return None
     try:
         selected_items = review.get("selected", []) if isinstance(review, dict) else None
         if not isinstance(selected_items, list):
