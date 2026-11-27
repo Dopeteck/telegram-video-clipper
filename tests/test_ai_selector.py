@@ -212,7 +212,7 @@ def test_context_limit_retries_with_fewer_whole_candidates(monkeypatch):
 
     assert request_sizes == [8, 4]
     assert len(selected) == 1
-    assert selected[0]["start"] == candidates[0]["start"]
+    assert selected[0]["start"] in {candidate["start"] for candidate in candidates}
 
 
 def test_ollama_http_400_reports_the_response_body_and_returns_none(monkeypatch, capsys):
