@@ -78,6 +78,7 @@ api.post('/upload/initiate', async (c) => {
       file_size: fileSize,
       mime_type: mimeType,
       status: 'uploading',
+      upload_type: 'video',
     });
 
     console.log(`[${requestId}] r2_create_multipart: uploadId=${uploadId}, key=${objectKey}, totalParts=${totalParts}`);
@@ -136,8 +137,13 @@ api.post('/broll/upload/initiate', async (c) => {
   if (!filename || !Number.isSafeInteger(fileSize) || fileSize <= 0 || !mimeType) {
     return c.json(createApiResponse(false, undefined, 'Missing or invalid file details'), 400);
   }
-  if (!validateMimeType(mimeType) || !validateFileExtension(filename)) {
-    return c.json(createApiResponse(false, undefined, 'Unsupported video format'), 400);
+  const brollExtension = filename.toLowerCase().match(/\.[^.]+$/)?.[0] || '';
+  if (
+    !validateMimeType(mimeType) ||
+    !validateFileExtension(filename) ||
+    !['.mp4', '.mov', '.mkv', '.webm'].includes(brollExtension)
+  ) {
+    return c.json(createApiResponse(false, undefined, 'B-roll must be MP4, MOV, MKV or WEBM so the AI editor can use it'), 400);
   }
 
   const maxSize = parseInt(c.env.MAX_UPLOAD_BYTES || '2147483648', 10);
@@ -600,6 +606,9 @@ api.post('/jobs', async (c) => {
   const upload = await db.getUpload(uploadId);
   if (!upload || upload.telegram_user_id !== user.id) {
     return c.json(createApiResponse(false, undefined, 'Upload not found', 'UPLOAD_NOT_FOUND'), 404);
+  }
+  if (upload.upload_type === 'broll') {
+    return c.json(createApiResponse(false, undefined, 'B-roll assets cannot be sent to the clipping workflow', 'BROLL_NOT_CLIPPABLE'), 400);
   }
   if (upload.status !== 'uploaded') {
     return c.json(createApiResponse(false, undefined, `Upload is not ready for processing (status: ${upload.status})`, 'UPLOAD_NOT_READY'), 409);
