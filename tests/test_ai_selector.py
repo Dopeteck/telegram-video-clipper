@@ -140,15 +140,16 @@ def test_ai_selector_uses_one_global_comparison_and_preserves_candidate_boundari
 
 
 def test_ai_review_pool_spreads_candidates_across_the_timeline_and_avoids_overlap():
+    starts = [0, 100, 250, 350, 500, 600, 750, 850]
     candidates = [
         _candidate(start, start + 70, score=9.0 - index * 0.1)
-        for index, start in enumerate(range(0, 800, 100))
+        for index, start in enumerate(starts)
     ]
-    pool = score_clips._balanced_ai_review_pool(candidates, duration=900, limit=4)
+    pool = score_clips._balanced_ai_review_pool(candidates, duration=1000, limit=4)
 
     assert len(pool) == 4
-    starts = [item["start"] for item in pool]
-    assert starts == [0.0, 200.0, 400.0, 600.0]
+    selected_starts = [item["start"] for item in pool]
+    assert selected_starts == [0.0, 250.0, 500.0, 750.0]
     for index, candidate in enumerate(pool):
         assert all(
             candidate["end"] <= other["start"] - 10
