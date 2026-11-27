@@ -2,6 +2,7 @@ name = "telegram-video-clipper-worker"
 main = "src/index.ts"
 compatibility_date = "2024-01-15"
 compatibility_flags = ["nodejs_compat"]
+keep_vars = true
 
 [vars]
 WORKER_URL = "https://telegram-video-clipper-worker-production.adegunwa3.workers.dev"
